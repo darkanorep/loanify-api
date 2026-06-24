@@ -21,6 +21,9 @@ model User {
   phone_number String    @unique
   username     String    @unique
   password     String
+  otp          String?
+  otp_expires  DateTime?
+  is_verified  Boolean   @default(false)
   created_at   DateTime  @default(now())
   updated_at   DateTime  @updatedAt
   deleted_at   DateTime?
