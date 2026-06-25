@@ -9,6 +9,10 @@ const transporter = nodemailer.createTransport({
 });
 
 const sendOtp = async (to, otp) => {
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+        throw new Error('Email transport is not configured (missing EMAIL_USER/EMAIL_PASS)');
+    }
+
     await transporter.sendMail({
         from: `"Loanify" <${process.env.EMAIL_USER}>`,
         to,
