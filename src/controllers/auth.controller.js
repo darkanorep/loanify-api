@@ -3,8 +3,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { sendOtp } = require('../lib/mailer');
 
-const generateOtp = () => require('crypto').randomInt(100000, 1000000).toString();
-const hashOtp = (otp) => require('crypto').createHash('sha256').update(otp).digest('hex');
+const generateOtp = () => Math.floor(100000 + Math.random() * 900000).toString();
+
 const register = async (req, res) => {
     try {
         const { first_name, middle_name, last_name, email, phone_number, username, password } = req.body;
@@ -14,14 +14,10 @@ const register = async (req, res) => {
         const otp_expires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
         const user = await prisma.user.create({
-            data: { first_name, middle_name, last_name, email, phone_number, username, password: hashed, otp: hashOtp(otp), otp_expires }
+            data: { first_name, middle_name, last_name, email, phone_number, username, password: hashed, otp, otp_expires }
         });
 
-        try {
-            await sendOtp(email, otp);
-        } catch (emailErr) {
-            return res.status(201).json({ message: 'Registered successfully. Unable to send OTP right now; please use the resend OTP endpoint.' });
-        }
+        await sendOtp(email, otp);
 
         res.status(201).json({ message: 'Registered successfully. Check your email for the OTP.' });
     } catch (err) {
