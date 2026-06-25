@@ -3,8 +3,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { sendOtp } = require('../lib/mailer');
 
-const generateOtp = () => Math.floor(100000 + Math.random() * 900000).toString();
-
+const generateOtp = () => require('crypto').randomInt(100000, 1000000).toString();
+const hashOtp = (otp) => require('crypto').createHash('sha256').update(otp).digest('hex');
 const register = async (req, res) => {
     try {
         const { first_name, middle_name, last_name, email, phone_number, username, password } = req.body;
