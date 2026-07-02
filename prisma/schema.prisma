@@ -13,19 +13,21 @@ datasource db {
 }
 
 model User {
-  id           Int       @id @default(autoincrement())
-  first_name   String
-  middle_name  String?
-  last_name    String
-  email        String    @unique
-  phone_number String?   @unique
-  username     String?   @unique
-  password     String?
-  google_id    String?   @unique
-  otp          String?
-  otp_expires  DateTime?
-  is_verified  Boolean   @default(false)
-  created_at   DateTime  @default(now())
-  updated_at   DateTime  @updatedAt
-  deleted_at   DateTime?
+  id                Int       @id @default(autoincrement())
+  first_name        String
+  middle_name       String?
+  last_name         String
+  email             String    @unique
+  phone_number      String?   @unique
+  username          String?   @unique
+  password          String?
+  google_id         String?   @unique
+  otp               String?
+  otp_expires       DateTime?
+  is_verified       Boolean   @default(false)
+  reset_otp         String?
+  reset_otp_expires DateTime?
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+  deleted_at        DateTime?
 }

@@ -5,6 +5,7 @@ const passport = require('./src/lib/passport');
 
 const authRoutes = require('./src/routes/auth.routes');
 const oauthRoutes = require('./src/routes/oauth.routes');
+const authenticate = require('./src/middlewares/auth');
 
 const app = express();
 
