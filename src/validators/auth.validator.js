@@ -5,9 +5,7 @@ const registerSchema = Joi.object({
     middle_name: Joi.string().optional().allow('', null),
     last_name: Joi.string().required(),
     email: Joi.string().email().required(),
-    phone_number: Joi.string().pattern(/^[0-9]{11}$/).required().messages({
-        'string.pattern.base': 'Phone number must be 11 digits'
-    }),
+    phone_number: Joi.string().pattern(/^\+\d{1,3}\d{4,14}(?:x.+)?$/).required(),
     username: Joi.string().min(3).max(30).required(),
     password: Joi.string().min(6).required(),
 });
