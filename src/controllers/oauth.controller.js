@@ -1,6 +1,8 @@
 const jwt = require('jsonwebtoken');
+const { addToken } = require('../lib/activeTokens'); // adjust path if yours differs
 
-const googleCallback = (req, res) => {
+const googleCallback = async (req, res) => {
+    const clientUrl = process.env.CLIENT_URL;
     try {
         const user = req.user;
         const token = jwt.sign(
@@ -9,10 +11,11 @@ const googleCallback = (req, res) => {
             { expiresIn: '1d' }
         );
 
-        // You can redirect to frontend with token or just return it
-        res.json({ message: 'Google login successful', token });
+        await addToken(token); // now recognized as valid by the auth middleware
+
+        res.redirect(`${clientUrl}/oauth/callback?token=${token}`);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        res.redirect(`${clientUrl}/login?error=oauth_failed`);
     }
 };
 

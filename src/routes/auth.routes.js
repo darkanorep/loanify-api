@@ -3,6 +3,7 @@ const router = express.Router();
 const { register, verifyOtp, resendOtp, login, logout, forgotPassword, resetPassword } = require('../controllers/auth.controller');
 const validate = require('../middlewares/validate');
 const authenticate = require('../middlewares/auth');
+const { verifyToken } = require('../controllers/verifyToken.controller');
 const { registerSchema, verifyOtpSchema, resendOtpSchema, loginSchema, forgotPasswordSchema, resetPasswordSchema } = require('../validators/auth.validator');
 
 router.post('/register', validate(registerSchema), register);
@@ -12,5 +13,6 @@ router.post('/login', validate(loginSchema), login);
 router.post('/logout', authenticate, logout);
 router.post('/forgot-password', validate(forgotPasswordSchema), forgotPassword);
 router.post('/reset-password', validate(resetPasswordSchema), resetPassword);
+router.get('/me', verifyToken);
 
 module.exports = router;

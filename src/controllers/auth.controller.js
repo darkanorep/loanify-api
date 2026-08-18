@@ -1,3 +1,4 @@
+const { addToken, removeToken } = require('../lib/activeTokens');
 const prisma = require('../lib/prisma');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -79,66 +80,78 @@ const login = async (req, res) => {
 
         const token = jwt.sign({ id: user.id, username: user.username }, process.env.JWT_SECRET, { expiresIn: '1d' });
 
+        // This was missing — without it, /me (and any route checking the
+        // Redis allowlist) would reject every regular login's token as
+        // "not active," even immediately after a correct login.
+        await addToken(token);
+
         res.json({ message: 'Login successful', token });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 };
 
-const logout = (req, res) => {
-  res.json({ message: 'Logged out successfully' });
+const logout = async (req, res) => {
+    const authHeader = req.headers.authorization; // "Bearer <token>"
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (token) {
+        await removeToken(token);
+    }
+
+    res.json({ message: 'Logged out successfully' });
 };
 
 const forgotPassword = async (req, res) => {
-  try {
-    const { email } = req.body;
+    try {
+        const { email } = req.body;
 
-    const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) return res.status(404).json({ error: 'User not found' });
+        const user = await prisma.user.findUnique({ where: { email } });
+        if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const otp = generateOtp();
-    const reset_otp_expires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+        const otp = generateOtp();
+        const reset_otp_expires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-    await prisma.user.update({
-      where: { email },
-      data: { reset_otp: otp, reset_otp_expires }
-    });
+        await prisma.user.update({
+            where: { email },
+            data: { reset_otp: otp, reset_otp_expires }
+        });
 
-    await sendOtp(email, otp);
+        await sendOtp(email, otp);
 
-    res.json({ message: 'Password reset OTP sent to your email.' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+        res.json({ message: 'Password reset OTP sent to your email.' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 };
 
 const resetPassword = async (req, res) => {
-  try {
-    const { email, otp, new_password } = req.body;
+    try {
+        const { email, otp, new_password } = req.body;
 
-    const user = await prisma.user.findUnique({ where: { email } });
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    if (user.reset_otp !== otp) return res.status(400).json({ error: 'Invalid OTP' });
-    if (new Date() > user.reset_otp_expires) return res.status(400).json({ error: 'OTP has expired' });
+        const user = await prisma.user.findUnique({ where: { email } });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        if (user.reset_otp !== otp) return res.status(400).json({ error: 'Invalid OTP' });
+        if (new Date() > user.reset_otp_expires) return res.status(400).json({ error: 'OTP has expired' });
 
-    const hashed = await bcrypt.hash(new_password, 10);
+        const hashed = await bcrypt.hash(new_password, 10);
 
-    await prisma.user.update({
-      where: { email },
-      data: { password: hashed, reset_otp: null, reset_otp_expires: null }
-    });
+        await prisma.user.update({
+            where: { email },
+            data: { password: hashed, reset_otp: null, reset_otp_expires: null }
+        });
 
-    res.json({ message: 'Password reset successfully. You can now log in.' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+        res.json({ message: 'Password reset successfully. You can now log in.' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 };
 
-module.exports = { 
-    register, 
-    verifyOtp, 
-    resendOtp, 
-    login, 
+module.exports = {
+    register,
+    verifyOtp,
+    resendOtp,
+    login,
     logout,
     forgotPassword,
     resetPassword

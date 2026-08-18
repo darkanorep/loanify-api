@@ -1,0 +1,26 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      CLIENT_URL: http://localhost:5173
+      COOKIE_SECURE: "false"
+      DATABASE_URL: postgresql://postgres:postgres@host.docker.internal:5432/loanify?schema=public
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      EMAIL_USER: ${EMAIL_USER:-your-email@example.com}
+      EMAIL_PASS: ${EMAIL_PASS:-your-app-password}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_CALLBACK_URL: http://localhost:3000/api/auth/google/callback
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "3001:3000"
+    restart: unless-stopped
+    command: sh -c "npx prisma db push && npm run start"
