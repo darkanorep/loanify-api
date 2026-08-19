@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const authenticate = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     if (!authHeader) {
-        return res.status(401).json({ error: 'Access denied. No token provided.' });
+        return res.status(401).json({ error: 'Unauthorized. No token provided.' });
     }
 
     const token = authHeader.split(' ')[1]; // Extract token from "Bearer <token>"
@@ -13,7 +13,7 @@ const authenticate = (req, res, next) => {
         req.user = decoded;
         next();
     } catch (error) {
-        res.status(400).json({ error: 'Invalid token.' });
+        res.status(401).json({ error: 'Unauthorized. Invalid token.' });
     }
 };
 

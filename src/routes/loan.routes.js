@@ -1,0 +1,16 @@
+const express = require('express');
+const router = express.Router();
+const { createLoan, approveLoan } = require('../controllers/loan.controller');
+const validate = require('../middlewares/validate');
+const authenticate = require('../middlewares/auth');
+const { createLoanSchema } = require('../validators/loan.validator');
+
+router.post('/', authenticate, validate(createLoanSchema), createLoan);
+
+// ⚠️ Only `authenticate` here — no role check exists yet. Any logged-in
+// user can currently hit this, including approving their own loan. Add a
+// requireAdmin (or similar) middleware here once you have a role system —
+// e.g. router.post('/:id/approve', authenticate, requireAdmin, approveLoan);
+router.post('/:id/approve', authenticate, approveLoan);
+
+module.exports = router;

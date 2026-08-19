@@ -4,9 +4,7 @@ const cors = require('cors');
 const session = require('express-session');
 const passport = require('./src/lib/passport');
 
-const authRoutes = require('./src/routes/auth.routes');
-const oauthRoutes = require('./src/routes/oauth.routes');
-const authenticate = require('./src/middlewares/auth');
+const apiRoutes = require('./route/api');
 
 const app = express();
 const PORT = process.env.PORT;
@@ -34,8 +32,7 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
-app.use('/api/auth', authRoutes);
-app.use('/api/auth', oauthRoutes);
+app.use('/api', apiRoutes);
 
 app.get('/', (req, res) => {
     res.json({ message: 'Loanify API is running' });
