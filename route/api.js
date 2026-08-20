@@ -5,11 +5,15 @@ const authRoutes = require('../src/routes/auth.routes');
 const oauthRoutes = require('../src/routes/oauth.routes');
 const loanRoutes = require('../src/routes/loan.routes');
 const dashboardRoutes = require('../src/routes/dashboard.routes');
+const paymentsRoutes = require('../src/routes/payments.routes');
+const paymentMethodRoutes = require('../src/routes/paymentmethod.routes');
 const authenticate = require('../src/middlewares/auth');
 
 router.use('/auth', authRoutes);
 router.use('/auth', oauthRoutes);
 router.use('/loans', authenticate, loanRoutes);
 router.use('/dashboard', authenticate, dashboardRoutes);
+router.use('/payments', authenticate, paymentsRoutes);
+router.use('/payment-methods', authenticate, paymentMethodRoutes);
 
 module.exports = router;

@@ -29,9 +29,12 @@ model User {
   reset_otp_expires DateTime?
   loans             Loan[]
   transactions      Transaction[]
-  created_at        DateTime      @default(now())
-  updated_at        DateTime      @updatedAt
-  deleted_at        DateTime?
+
+  autopay_enabled Boolean         @default(false)
+  payment_methods PaymentMethod[]
+  created_at      DateTime        @default(now())
+  updated_at      DateTime        @updatedAt
+  deleted_at      DateTime?
 }
 
 // Add these to your existing schema.prisma, and add the two relation
@@ -133,8 +136,47 @@ model Transaction {
   installment_id Int?
   installment    Installment? @relation(fields: [installment_id], references: [id])
 
+  payment_method_id Int?
+  payment_method    PaymentMethod? @relation(fields: [payment_method_id], references: [id])
+
   created_at DateTime @default(now())
 
   @@index([loan_id])
   @@index([user_id])
 }
+
+enum PaymentMethodType {
+  BANK_ACCOUNT
+  CARD
+}
+
+model PaymentMethod {
+  id      Int  @id @default(autoincrement())
+  user_id Int
+  user    User @relation(fields: [user_id], references: [id])
+
+  type             PaymentMethodType
+  institution_name String // e.g. "Chase Business Premier Checking"
+  last_four        String // ONLY last 4 digits — never store full account/card numbers, even in a demo system
+  is_default       Boolean           @default(false)
+
+  transactions Transaction[]
+
+  created_at DateTime @default(now())
+
+  @@index([user_id])
+}
+
+// Add this field + relation to your existing User model:
+//
+// model User {
+//   ...existing fields...
+
+// }
+
+// Add these to your existing Transaction model:
+//
+// model Transaction {
+//   ...existing fields...
+
+// }
