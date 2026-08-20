@@ -1,10 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const { createLoan, approveLoan } = require('../controllers/loan.controller');
+const { createLoan, approveLoan, getMyLoans } = require('../controllers/loan.controller');
 const validate = require('../middlewares/validate');
 const authenticate = require('../middlewares/auth');
 const { createLoanSchema } = require('../validators/loan.validator');
 
+router.get('/', authenticate, getMyLoans);
 router.post('/', authenticate, validate(createLoanSchema), createLoan);
 
 // ⚠️ Only `authenticate` here — no role check exists yet. Any logged-in

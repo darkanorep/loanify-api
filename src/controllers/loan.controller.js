@@ -127,4 +127,27 @@ const approveLoan = async (req, res) => {
     }
 };
 
-module.exports = { createLoan, approveLoan };
+const getMyLoans = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const loans = await prisma.loan.findMany({
+            where: { user_id: userId },
+            orderBy: { created_at: 'desc' },
+            include: {
+                // Earliest still-unpaid installment — used for "Next Due".
+                // Empty array for a fully paid/completed loan, which the
+                // frontend treats as "no more payments due."
+                installments: {
+                    where: { status: { in: ['PENDING', 'PARTIALLY_PAID'] } },
+                    orderBy: { due_date: 'asc' },
+                    take: 1,
+                },
+            },
+        });
+        res.json({ loans });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+module.exports = { createLoan, approveLoan, getMyLoans };
