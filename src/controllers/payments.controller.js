@@ -4,11 +4,28 @@ const getPaymentsSummary = async (req, res) => {
     try {
         const userId = req.user.id;
 
-        // --- Next Due Installment (across all active loans) ---
-        const activeLoans = await prisma.loan.findMany({
+        // --- Active loans, with their next-due installment for the
+        // Make Payment modal's "Select Loan Account" list ---
+        const activeLoansRaw = await prisma.loan.findMany({
             where: { user_id: userId, status: 'ACTIVE' },
+            include: {
+                installments: {
+                    where: { status: { in: ['PENDING', 'PARTIALLY_PAID'] } },
+                    orderBy: { due_date: 'asc' },
+                    take: 1,
+                },
+            },
         });
 
+        const activeLoans = activeLoansRaw.map((loan) => ({
+            id: loan.id,
+            purpose: loan.purpose,
+            outstanding_balance: Number(loan.outstanding_balance),
+            monthly_installment: Number(loan.monthly_installment),
+            next_due_date: loan.installments[0]?.due_date || null,
+        }));
+
+        // --- Next Due Installment (aggregate, across all active loans) ---
         const nextInstallment = await prisma.installment.findFirst({
             where: {
                 loan: { user_id: userId, status: 'ACTIVE' },
@@ -45,15 +62,13 @@ const getPaymentsSummary = async (req, res) => {
             description: tx.type === 'DISBURSEMENT' ? 'Loan Disbursement' : 'Loan Repayment',
             method: tx.payment_method
                 ? `${tx.payment_method.institution_name} (•••${tx.payment_method.last_four})`
-                : null, // null when not tied to a specific account — e.g. system-generated disbursements
+                : null,
             amount: Number(tx.amount) * (tx.type === 'REPAYMENT' ? -1 : 1),
-            // No real status field exists on Transaction yet — derived from
-            // type for now. Disbursements read as "Approved" (matches the
-            // mockup), repayments as "Completed".
             status: tx.type === 'DISBURSEMENT' ? 'Approved' : 'Completed',
         }));
 
         res.json({
+            active_loans: activeLoans,
             next_due: nextInstallment
                 ? {
                     amount:
