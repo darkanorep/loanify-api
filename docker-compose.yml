@@ -11,6 +11,7 @@ services:
       CLIENT_URL: http://localhost:5173
       COOKIE_SECURE: "false"
       DATABASE_URL: postgresql://postgres:postgres@host.docker.internal:5432/loanify?schema=public
+      REDIS_URL: redis://redis:6379
       SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       EMAIL_USER: ${EMAIL_USER:-your-email@example.com}
@@ -20,7 +21,21 @@ services:
       GOOGLE_CALLBACK_URL: http://localhost:3000/api/auth/google/callback
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
     ports:
       - "3001:3000"
     restart: unless-stopped
     command: sh -c "npx prisma db push && npm run start"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
