@@ -12,6 +12,14 @@ datasource db {
   provider = "postgresql"
 }
 
+enum KycStatus {
+  NOT_STARTED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+
 model User {
   id                Int           @id @default(autoincrement())
   first_name        String
@@ -29,6 +37,8 @@ model User {
   reset_otp_expires DateTime?
   loans             Loan[]
   transactions      Transaction[]
+  full_name  String?              // optional override; falls back to `${first_name} ${last_name}` if unset
+  kyc_status KycStatus @default(NOT_STARTED)
 
   autopay_enabled Boolean         @default(false)
   payment_methods PaymentMethod[]
