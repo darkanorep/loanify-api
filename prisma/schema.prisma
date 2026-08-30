@@ -26,6 +26,7 @@ model User {
   middle_name       String?
   last_name         String
   email             String        @unique
+  phone_country_code String?  @default("+63")
   phone_number      String?       @unique
   username          String?       @unique
   password          String?

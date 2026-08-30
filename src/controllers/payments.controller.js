@@ -71,10 +71,10 @@ const getPaymentsSummary = async (req, res) => {
             active_loans: activeLoans,
             next_due: nextInstallment
                 ? {
-                    amount:
-                        Number(nextInstallment.amount_due) - Number(nextInstallment.amount_paid),
+                    amount: Number(nextInstallment.amount_due) - Number(nextInstallment.amount_paid),
                     due_date: nextInstallment.due_date,
                     active_loan_count: activeLoans.length,
+                    loan_id: nextInstallment.loan_id // <--- Add this property
                 }
                 : null,
             autopay_enabled: user.autopay_enabled,

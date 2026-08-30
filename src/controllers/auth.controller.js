@@ -147,6 +147,76 @@ const resetPassword = async (req, res) => {
     }
 };
 
+// Request OTP specifically for profile updates (stores OTP on the existing user record)
+const requestProfileOtp = async (req, res) => {
+    try {
+        const userId = req.user.id; // From your auth middleware
+        const { email, phone_number } = req.body;
+
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        const otp = generateOtp();
+        const otp_expires = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+
+        // Save pending changes or OTP to user record
+        await prisma.user.update({
+            where: { id: userId },
+            data: { otp, otp_expires }
+        });
+
+        // Send OTP to the target email (or phone)
+        const targetEmail = email || user.email;
+        await sendOtp(targetEmail, otp);
+
+        res.json({ message: 'Verification code sent successfully.' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// Update profile and verify OTP simultaneously
+const updateProfileWithOtp = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { full_name, email, phone_country_code, phone_number, otp_code } = req.body;
+
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        // If email or phone changed, validate OTP
+        const emailChanged = email && email !== user.email;
+        const phoneChanged = phone_number && phone_number !== user.phone_number;
+
+        if (emailChanged || phoneChanged) {
+            if (!otp_code || user.otp !== otp_code) {
+                return res.status(400).json({ error: 'Invalid verification code' });
+            }
+            if (user.otp_expires && new Date() > user.otp_expires) {
+                return res.status(400).json({ error: 'Verification code has expired' });
+            }
+        }
+
+        // Split full_name back into name fields if your schema requires it, or update directly
+        const updatedUser = await prisma.user.update({
+            where: { id: userId },
+            data: {
+                first_name: full_name ? full_name.split(" ")[0] : user.first_name,
+                last_name: full_name ? full_name.split(" ").slice(1).join(" ") : user.last_name,
+                email: email || user.email,
+                phone_country_code: phone_country_code || user.phone_country_code,
+                phone_number: phone_number || user.phone_number,
+                otp: null,
+                otp_expires: null
+            }
+        });
+
+        res.json({ message: 'Profile updated successfully', user: updatedUser });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
 module.exports = {
     register,
     verifyOtp,
@@ -154,5 +224,7 @@ module.exports = {
     login,
     logout,
     forgotPassword,
-    resetPassword
+    resetPassword,
+    requestProfileOtp,
+    updateProfileWithOtp
 };

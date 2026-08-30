@@ -100,19 +100,42 @@ const getProfile = async (req, res) => {
 // without a stronger re-verification flow than a plain profile edit.
 const updateProfile = async (req, res) => {
     try {
-        const { full_name } = req.body;
-        if (!full_name || !full_name.trim()) {
-            return res.status(400).json({ error: 'Full name is required.' });
+        const userId = req.user.id; // Use dynamic ID from auth middleware, not hardcoded 1
+        const { full_name, email, phone_country_code, phone_number, otp_code } = req.body;
+
+        const user = await prisma.user.findUnique({ where: { id: userId } });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        const emailChanged = email && email !== user.email;
+        const phoneChanged = phone_number && phone_number !== user.phone_number;
+
+        if (emailChanged || phoneChanged) {
+            if (!otp_code || user.otp !== otp_code) {
+                return res.status(400).json({ error: 'Invalid verification code' });
+            }
+            if (user.otp_expires && new Date() > user.otp_expires) {
+                return res.status(400).json({ error: 'Verification code has expired' });
+            }
         }
 
-        const user = await prisma.user.update({
-            where: { id: req.user.id },
-            data: { full_name: full_name.trim() },
+        const updatedUser = await prisma.user.update({
+            where: { id: userId },
+            data: {
+                ...(full_name && {
+                    first_name: full_name.split(" ")[0],
+                    last_name: full_name.split(" ").slice(1).join(" ") || user.last_name
+                }),
+                ...(email && { email }),
+                ...(phone_country_code && { phone_country_code }),
+                ...(phone_number && { phone_number }),
+                otp: null,
+                otp_expires: null
+            }
         });
 
-        res.json({ message: 'Profile updated.', full_name: user.full_name });
+        res.json({ message: 'Profile updated successfully', user: updatedUser });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        res.status(400).json({ error: err.message });
     }
 };
 

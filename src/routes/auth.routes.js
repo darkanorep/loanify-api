@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { register, verifyOtp, resendOtp, login, logout, forgotPassword, resetPassword } = require('../controllers/auth.controller');
+const { register, verifyOtp, resendOtp, login, logout, forgotPassword, resetPassword, requestProfileOtp, updateProfileWithOtp } = require('../controllers/auth.controller');
 const validate = require('../middlewares/validate');
 const authenticate = require('../middlewares/auth');
 const { verifyToken } = require('../controllers/verifyToken.controller');
@@ -14,5 +14,7 @@ router.post('/logout', authenticate, logout);
 router.post('/forgot-password', validate(forgotPasswordSchema), forgotPassword);
 router.post('/reset-password', validate(resetPasswordSchema), resetPassword);
 router.get('/me', verifyToken);
+router.post('/request-profile-otp', authenticate, requestProfileOtp);
+router.post('/update-profile', authenticate, updateProfileWithOtp);
 
 module.exports = router;
