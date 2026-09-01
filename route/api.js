@@ -8,6 +8,7 @@ const loanRoutes = require('../src/routes/loan.routes');
 const dashboardRoutes = require('../src/routes/dashboard.routes');
 const paymentsRoutes = require('../src/routes/payments.routes');
 const paymentMethodRoutes = require('../src/routes/paymentmethod.routes');
+const p2pRoutes = require('../src/routes/p2p.routes');
 const authenticate = require('../src/middlewares/auth');
 
 router.use('/auth', authRoutes);
@@ -17,5 +18,6 @@ router.use('/loans', authenticate, loanRoutes);
 router.use('/dashboard', authenticate, dashboardRoutes);
 router.use('/payments', authenticate, paymentsRoutes);
 router.use('/payment-methods', authenticate, paymentMethodRoutes);
+router.use('/p2p', authenticate, p2pRoutes);
 
 module.exports = router;

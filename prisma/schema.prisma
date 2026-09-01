@@ -1,8 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client-js"
   output   = "../generated/prisma"
@@ -19,50 +17,52 @@ enum KycStatus {
   REJECTED
 }
 
-
 model User {
-  id                Int           @id @default(autoincrement())
-  first_name        String
-  middle_name       String?
-  last_name         String
-  email             String        @unique
-  phone_country_code String?  @default("+63")
-  phone_number      String?       @unique
-  username          String?       @unique
-  password          String?
-  google_id         String?       @unique
-  otp               String?
-  otp_expires       DateTime?
-  is_verified       Boolean       @default(false)
-  reset_otp         String?
-  reset_otp_expires DateTime?
-  loans             Loan[]
-  transactions      Transaction[]
-  full_name  String?              // optional override; falls back to `${first_name} ${last_name}` if unset
-  kyc_status KycStatus @default(NOT_STARTED)
+  id                 Int             @id @default(autoincrement())
+  first_name         String
+  middle_name        String?
+  last_name          String
+  email              String          @unique
+  phone_country_code String?         @default("+63")
+  phone_number       String?         @unique
+  username           String?         @unique
+  password           String?
+  google_id          String?         @unique
+  otp                String?
+  otp_expires        DateTime?
+  is_verified        Boolean         @default(false)
+  reset_otp          String?
+  reset_otp_expires  DateTime?
+  credit_score       Int             @default(0)
+  credit_limit       Float           @default(500)
+  loans              Loan[]
+  transactions       Transaction[]
+  full_name          String?
+  kyc_status         KycStatus       @default(NOT_STARTED)
+  autopay_enabled    Boolean         @default(false)
+  payment_methods    PaymentMethod[]
+  
+  // P2P Ad & Application Relations
+  lender_offers         P2pOffer[]       @relation("LenderOffers")
+  borrower_applications P2pApplication[] @relation("BorrowerApplications")
 
-  autopay_enabled Boolean         @default(false)
-  payment_methods PaymentMethod[]
-  created_at      DateTime        @default(now())
-  updated_at      DateTime        @updatedAt
-  deleted_at      DateTime?
+  created_at         DateTime        @default(now())
+  updated_at         DateTime        @updatedAt
+  deleted_at         DateTime?
 }
 
-// Add these to your existing schema.prisma, and add the two relation
-// fields noted at the bottom to your existing User model.
-
 enum LoanStatus {
-  PENDING // application submitted, awaiting approval
-  APPROVED // approved but not yet disbursed
-  ACTIVE // disbursed, currently being repaid
-  COMPLETED // fully repaid
-  REJECTED // application denied
-  DEFAULTED // missed payments beyond your grace period
-  CANCELLED // withdrawn by borrower before disbursement
+  PENDING
+  APPROVED
+  ACTIVE
+  COMPLETED
+  REJECTED
+  DEFAULTED
+  CANCELLED
 }
 
 enum InstallmentStatus {
-  PENDING // not yet paid — "overdue" is derived (due_date < now), not stored
+  PENDING
   PARTIALLY_PAID
   PAID
 }
@@ -77,18 +77,14 @@ model Loan {
   user_id Int
   user    User @relation(fields: [user_id], references: [id])
 
-  purpose String? // optional — what the loan is for
+  purpose String?
 
-  // Terms, locked in at creation — see note above on why these aren't
-  // recalculated live from interest_rate.
   principal_amount    Decimal @db.Decimal(12, 2)
-  interest_rate       Decimal @db.Decimal(5, 2) // flat %, e.g. 5.00 = 5%
+  interest_rate       Decimal @db.Decimal(5, 2)
   term_months         Int
   monthly_installment Decimal @db.Decimal(12, 2)
-  total_repayable     Decimal @db.Decimal(12, 2) // principal + total flat interest
+  total_repayable     Decimal @db.Decimal(12, 2)
 
-  // Running totals — updated as transactions come in, not recalculated
-  // from scratch on every read.
   total_paid          Decimal @default(0) @db.Decimal(12, 2)
   outstanding_balance Decimal @db.Decimal(12, 2)
 
@@ -114,7 +110,7 @@ model Installment {
   loan_id Int
   loan    Loan @relation(fields: [loan_id], references: [id])
 
-  installment_number Int // 1, 2, 3... up to term_months
+  installment_number Int
   due_date           DateTime
   amount_due         Decimal           @db.Decimal(12, 2)
   amount_paid        Decimal           @default(0) @db.Decimal(12, 2)
@@ -126,7 +122,7 @@ model Installment {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  @@unique([loan_id, installment_number]) // one #3 per loan, not globally
+  @@unique([loan_id, installment_number])
   @@index([loan_id])
   @@index([due_date])
 }
@@ -142,8 +138,6 @@ model Transaction {
   amount      Decimal         @db.Decimal(12, 2)
   description String?
 
-  // Optional — set when a repayment transaction is applied against a
-  // specific installment. Null for the disbursement transaction itself.
   installment_id Int?
   installment    Installment? @relation(fields: [installment_id], references: [id])
 
@@ -167,8 +161,8 @@ model PaymentMethod {
   user    User @relation(fields: [user_id], references: [id])
 
   type             PaymentMethodType
-  institution_name String // e.g. "Chase Business Premier Checking"
-  last_four        String // ONLY last 4 digits — never store full account/card numbers, even in a demo system
+  institution_name String
+  last_four        String
   is_default       Boolean           @default(false)
 
   transactions Transaction[]
@@ -178,16 +172,25 @@ model PaymentMethod {
   @@index([user_id])
 }
 
-// Add this field + relation to your existing User model:
-//
-// model User {
-//   ...existing fields...
+model P2pOffer {
+  id               Int              @id @default(autoincrement())
+  lender_id        Int
+  lender           User             @relation("LenderOffers", fields: [lender_id], references: [id])
+  amount_available Float
+  interest_rate    Float
+  term_months      Int
+  status           String           @default("ACTIVE") // ACTIVE, CLOSED
+  created_at       DateTime         @default(now())
+  applications     P2pApplication[]
+}
 
-// }
-
-// Add these to your existing Transaction model:
-//
-// model Transaction {
-//   ...existing fields...
-
-// }
+model P2pApplication {
+  id          Int       @id @default(autoincrement())
+  offer_id    Int
+  offer       P2pOffer  @relation(fields: [offer_id], references: [id])
+  borrower_id Int
+  borrower    User      @relation("BorrowerApplications", fields: [borrower_id], references: [id])
+  amount      Float
+  status      String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  created_at  DateTime  @default(now())
+}
