@@ -25,7 +25,7 @@ const createOffer = async (req, res) => {
                 lender_id: lenderId,
                 amount_available: parseFloat(amount_available),
                 interest_rate: parseFloat(interest_rate),
-                term_months: parseInt(termMonths),
+                term_months: parseInt(term_months), // Fixed: changed termMonths to term_months
                 status: "ACTIVE"
             }
         });
@@ -83,6 +83,18 @@ const applyToOffer = async (req, res) => {
             }
         });
 
+        // ==========================================
+        // FIRE REAL-TIME NOTIFICATION TO LENDER
+        // ==========================================
+        const io = req.app.get('io');
+        if (io) {
+            io.to(`user_${offer.lender_id}`).emit('new_application', {
+                title: "New Loan Application",
+                message: `Someone just applied to borrow $${amount} from your offer!`,
+                application_id: application.id
+            });
+        }
+
         res.status(201).json({ message: "Application submitted to lender successfully.", application });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -135,6 +147,13 @@ const approveApplication = async (req, res) => {
             return res.status(400).json({ error: "Insufficient funds available in your offer to approve this." });
         }
 
+        // Define calculations before the transaction block
+        const principal = application.amount;
+        const rate = application.offer.interest_rate / 100;
+        const totalInterest = principal * rate * (application.offer.term_months / 12);
+        const totalRepayable = principal + totalInterest;
+        const monthlyInstallment = totalRepayable / application.offer.term_months;
+
         // Run as a transaction so everything succeeds or fails together
         await prisma.$transaction(async (tx) => {
             // 1. Mark application as APPROVED
@@ -146,7 +165,7 @@ const approveApplication = async (req, res) => {
             // 2. Deduct amount from the lender's offer
             const updatedOffer = await tx.p2pOffer.update({
                 where: { id: application.offer.id },
-                data: { amount_available: { decrement: application.amount } }
+                data: { amount_available: { decrement: principal } }
             });
 
             // 3. Auto-close offer if balance hits 0
@@ -158,13 +177,6 @@ const approveApplication = async (req, res) => {
             }
 
             // 4. Create the actual Loan record for the borrower
-            // Simple flat interest calculation for the loan setup
-            const principal = application.amount;
-            const rate = application.offer.interest_rate / 100;
-            const totalInterest = principal * rate * (application.offer.term_months / 12);
-            const totalRepayable = principal + totalInterest;
-            const monthlyInstallment = totalRepayable / application.offer.term_months;
-
             await tx.loan.create({
                 data: {
                     user_id: application.borrower_id,
@@ -175,7 +187,7 @@ const approveApplication = async (req, res) => {
                     monthly_installment: monthlyInstallment,
                     total_repayable: totalRepayable,
                     outstanding_balance: totalRepayable,
-                    status: "APPROVED" 
+                    status: "ACTIVE" 
                 }
             });
         });

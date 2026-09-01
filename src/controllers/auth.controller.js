@@ -10,11 +10,21 @@ const register = async (req, res) => {
     try {
         const { first_name, middle_name, last_name, email, phone_number, username, password } = req.body;
 
+        const existingUser = await prisma.user.findUnique({
+            where: { email: email }
+        });
+
+        if (existingUser) {
+            return res.status(400).json({ 
+                error: "An account with this email is already registered." 
+            });
+        }
+
         const hashed = await bcrypt.hash(password, 10);
         const otp = generateOtp();
-        const otp_expires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+        const otp_expires = new Date(Date.now() + 10 * 60 * 1000);
 
-        const user = await prisma.user.create({
+        await prisma.user.create({
             data: { first_name, middle_name, last_name, email, phone_number, username, password: hashed, otp, otp_expires }
         });
 
@@ -22,7 +32,10 @@ const register = async (req, res) => {
 
         res.status(201).json({ message: 'Registered successfully. Check your email for the OTP.' });
     } catch (err) {
-        res.status(400).json({ error: err.message });
+        if (err.code === 'P2002') {
+            return res.status(400).json({ error: `An account with this ${err.meta.target[0]} already exists.` });
+        }
+        res.status(500).json({ error: "Something went wrong during registration." });
     }
 };
 
