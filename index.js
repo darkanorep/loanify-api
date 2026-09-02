@@ -4,25 +4,18 @@ const cors = require('cors');
 const session = require('express-session');
 const passport = require('./src/lib/passport');
 const http = require('http');
-const { Server } = require('socket.io');
+const { initWebSocket } = require('./src/lib/websocket');
 
 const apiRoutes = require('./route/api');
 
 const app = express();
-const PORT = process.env.PORT;
+const server = http.createServer(app);
+const PORT = process.env.PORT || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
 const useSecureCookies = isProduction && process.env.COOKIE_SECURE !== 'false';
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: process.env.CLIENT_URL, methods: ["GET", "POST"] } // Match your Vite frontend URL
-});
-app.set('io', io);
 
-io.on('connection', (socket) => {
-  socket.on('identify', (userId) => {
-    socket.join(`user_${userId}`); // e.g., joins room 'user_5'
-  });
-});
+// Initialize native WebSocket server on the HTTP server
+initWebSocket(server);
 
 // CORS must be registered before your routes — and before session/passport,
 // so preflight OPTIONS requests get the right headers even before auth runs.
@@ -30,7 +23,6 @@ app.use(cors({
     origin: process.env.CLIENT_URL, // exact origin, not "*" — required when credentials: true
     credentials: true,
 }));
-
 
 app.use(express.json());
 app.use(session({
@@ -53,5 +45,5 @@ app.get('/', (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });

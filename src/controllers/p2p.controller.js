@@ -1,4 +1,5 @@
 const prisma = require('../lib/prisma');
+const { sendToUser } = require('../lib/websocket');
 
 // 1. Lender creates a lending advertisement / offer
 const createOffer = async (req, res) => {
@@ -84,16 +85,14 @@ const applyToOffer = async (req, res) => {
         });
 
         // ==========================================
-        // FIRE REAL-TIME NOTIFICATION TO LENDER
+        // FIRE REAL-TIME NOTIFICATION TO LENDER VIA NATIVE WEBSOCKET
         // ==========================================
-        const io = req.app.get('io');
-        if (io) {
-            io.to(`user_${offer.lender_id}`).emit('new_application', {
-                title: "New Loan Application",
-                message: `Someone just applied to borrow $${amount} from your offer!`,
-                application_id: application.id
-            });
-        }
+        sendToUser(offer.lender_id, {
+            type: "new_application",
+            title: "New Loan Application",
+            message: `Someone just applied to borrow $${amount} from your offer!`,
+            application_id: application.id
+        });
 
         res.status(201).json({ message: "Application submitted to lender successfully.", application });
     } catch (err) {
@@ -147,28 +146,23 @@ const approveApplication = async (req, res) => {
             return res.status(400).json({ error: "Insufficient funds available in your offer to approve this." });
         }
 
-        // Define calculations before the transaction block
         const principal = application.amount;
         const rate = application.offer.interest_rate / 100;
         const totalInterest = principal * rate * (application.offer.term_months / 12);
         const totalRepayable = principal + totalInterest;
         const monthlyInstallment = totalRepayable / application.offer.term_months;
 
-        // Run as a transaction so everything succeeds or fails together
         await prisma.$transaction(async (tx) => {
-            // 1. Mark application as APPROVED
             await tx.p2pApplication.update({
                 where: { id: application.id },
                 data: { status: "APPROVED" }
             });
 
-            // 2. Deduct amount from the lender's offer
             const updatedOffer = await tx.p2pOffer.update({
                 where: { id: application.offer.id },
                 data: { amount_available: { decrement: principal } }
             });
 
-            // 3. Auto-close offer if balance hits 0
             if (updatedOffer.amount_available <= 0) {
                 await tx.p2pOffer.update({
                     where: { id: application.offer.id },
@@ -176,7 +170,6 @@ const approveApplication = async (req, res) => {
                 });
             }
 
-            // 4. Create the actual Loan record for the borrower
             await tx.loan.create({
                 data: {
                     user_id: application.borrower_id,
@@ -187,9 +180,19 @@ const approveApplication = async (req, res) => {
                     monthly_installment: monthlyInstallment,
                     total_repayable: totalRepayable,
                     outstanding_balance: totalRepayable,
-                    status: "ACTIVE" 
+                    status: "ACTIVE"
                 }
             });
+        });
+
+        // ==========================================
+        // NOTIFY BORROWER IN REAL-TIME
+        // ==========================================
+        sendToUser(application.borrower_id, {
+            type: "loan_approved",
+            title: "Loan Approved! 🎉",
+            message: `Your application to borrow $${principal} has been approved by the lender.`,
+            application_id: application.id
         });
 
         res.json({ message: "Application approved successfully. Loan created." });
