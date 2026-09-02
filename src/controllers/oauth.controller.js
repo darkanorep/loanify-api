@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
-const { addToken } = require('../lib/activeTokens'); // adjust path if yours differs
+const prisma = require('../lib/prisma');
+const { addToken } = require('../lib/activeTokens');
 
 const googleCallback = async (req, res) => {
     const clientUrl = process.env.CLIENT_URL;
@@ -7,11 +8,18 @@ const googleCallback = async (req, res) => {
         const user = req.user;
         const token = jwt.sign(
             { id: user.id, username: user.username, email: user.email },
-            process.env.JWT_SECRET,
+            process.env.JWT_SECRET || "loanify-dev-secret",
             { expiresIn: '1d' }
         );
 
-        await addToken(token); // now recognized as valid by the auth middleware
+        // Register in active tokens cache/store and save session in database
+        await addToken(token);
+        await prisma.session.create({
+            data: {
+                user_id: user.id,
+                token: token
+            }
+        });
 
         res.redirect(`${clientUrl}/oauth/callback?token=${token}`);
     } catch (err) {

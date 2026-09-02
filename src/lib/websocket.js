@@ -17,7 +17,7 @@ function initWebSocket(server) {
             }
 
             // Ensure this matches the secret used in your auth controller/middleware
-            const secret = process.env.JWT_SECRET || process.env.ACCESS_TOKEN_SECRET || "loanify-dev-secret";
+            const secret = process.env.JWT_SECRET || process.env.ACCESS_TOKEN_SECRET;
             const decoded = jwt.verify(token, secret);
 
             // Adjust 'id' if your token payload stores user ID under a different key (e.g., decoded.userId)

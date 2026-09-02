@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { addToken, removeToken } = require('../lib/activeTokens');
 const prisma = require('../lib/prisma');
 const bcrypt = require('bcryptjs');
@@ -15,8 +16,8 @@ const register = async (req, res) => {
         });
 
         if (existingUser) {
-            return res.status(400).json({ 
-                error: "An account with this email is already registered." 
+            return res.status(400).json({
+                error: "An account with this email is already registered."
             });
         }
 
@@ -91,28 +92,47 @@ const login = async (req, res) => {
         const match = await bcrypt.compare(password, user.password);
         if (!match) return res.status(401).json({ error: 'Invalid credentials' });
 
-        const token = jwt.sign({ id: user.id, username: user.username }, process.env.JWT_SECRET, { expiresIn: '1d' });
+        const token = jwt.sign(
+            {
+                id: user.id,
+                jti: crypto.randomUUID() // Ensures every token is completely unique
+            },
+            process.env.JWT_SECRET || "loanify-dev-secret",
+            { expiresIn: '7d' }
+        );
 
-        // This was missing — without it, /me (and any route checking the
-        // Redis allowlist) would reject every regular login's token as
-        // "not active," even immediately after a correct login.
         await addToken(token);
+
+        await prisma.session.create({
+            data: {
+                user_id: user.id,
+                token: token
+            }
+        });
 
         res.json({ message: 'Login successful', token });
     } catch (err) {
+        console.error("Login error:", err);
         res.status(500).json({ error: err.message });
     }
 };
 
 const logout = async (req, res) => {
-    const authHeader = req.headers.authorization; // "Bearer <token>"
-    const token = authHeader && authHeader.split(' ')[1];
+    try {
+        const authHeader = req.headers.authorization;
+        const token = authHeader && authHeader.split(' ')[1];
 
-    if (token) {
-        await removeToken(token);
+        if (token) {
+            await removeToken(token);
+            await prisma.session.deleteMany({
+                where: { token }
+            });
+        }
+
+        res.json({ message: 'Logged out successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-
-    res.json({ message: 'Logged out successfully' });
 };
 
 const forgotPassword = async (req, res) => {
@@ -160,25 +180,22 @@ const resetPassword = async (req, res) => {
     }
 };
 
-// Request OTP specifically for profile updates (stores OTP on the existing user record)
 const requestProfileOtp = async (req, res) => {
     try {
-        const userId = req.user.id; // From your auth middleware
-        const { email, phone_number } = req.body;
+        const userId = req.user.id;
+        const { email, phone_country_code, phone_number } = req.body;
 
         const user = await prisma.user.findUnique({ where: { id: userId } });
         if (!user) return res.status(404).json({ error: 'User not found' });
 
         const otp = generateOtp();
-        const otp_expires = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+        const otp_expires = new Date(Date.now() + 10 * 60 * 1000);
 
-        // Save pending changes or OTP to user record
         await prisma.user.update({
             where: { id: userId },
             data: { otp, otp_expires }
         });
 
-        // Send OTP to the target email (or phone)
         const targetEmail = email || user.email;
         await sendOtp(targetEmail, otp);
 
@@ -188,7 +205,6 @@ const requestProfileOtp = async (req, res) => {
     }
 };
 
-// Update profile and verify OTP simultaneously
 const updateProfileWithOtp = async (req, res) => {
     try {
         const userId = req.user.id;
@@ -197,7 +213,6 @@ const updateProfileWithOtp = async (req, res) => {
         const user = await prisma.user.findUnique({ where: { id: userId } });
         if (!user) return res.status(404).json({ error: 'User not found' });
 
-        // If email or phone changed, validate OTP
         const emailChanged = email && email !== user.email;
         const phoneChanged = phone_number && phone_number !== user.phone_number;
 
@@ -210,7 +225,6 @@ const updateProfileWithOtp = async (req, res) => {
             }
         }
 
-        // Split full_name back into name fields if your schema requires it, or update directly
         const updatedUser = await prisma.user.update({
             where: { id: userId },
             data: {

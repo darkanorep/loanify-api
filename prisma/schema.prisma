@@ -50,6 +50,7 @@ model User {
   updated_at    DateTime       @updatedAt
   deleted_at    DateTime?
   notifications Notification[]
+  sessions      Session[]
 }
 
 enum LoanStatus {
@@ -204,5 +205,13 @@ model Notification {
   message    String
   type       String // e.g., "new_application", "loan_approved"
   is_read    Boolean  @default(false)
+  created_at DateTime @default(now())
+}
+
+model Session {
+  id         Int      @id @default(autoincrement())
+  user_id    Int
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  token      String   @unique @db.Text
   created_at DateTime @default(now())
 }
