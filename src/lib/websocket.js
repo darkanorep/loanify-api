@@ -1,12 +1,13 @@
 const WebSocket = require('ws');
 const jwt = require('jsonwebtoken');
+const prisma = require('./prisma');
 
 const activeClients = new Map(); // userId -> WebSocket instance
 
 function initWebSocket(server) {
     const wss = new WebSocket.Server({ server });
 
-    wss.on('connection', (ws, req) => {
+    wss.on('connection', async (ws, req) => {
         try {
             const urlParams = new URLSearchParams(req.url.split('?')[1]);
             const token = urlParams.get('token');
@@ -16,15 +17,22 @@ function initWebSocket(server) {
                 return;
             }
 
-            // Ensure this matches the secret used in your auth controller/middleware
-            const secret = process.env.JWT_SECRET || process.env.ACCESS_TOKEN_SECRET;
+            const secret = process.env.JWT_SECRET || process.env.ACCESS_TOKEN_SECRET || "loanify-dev-secret";
             const decoded = jwt.verify(token, secret);
-
-            // Adjust 'id' if your token payload stores user ID under a different key (e.g., decoded.userId)
             const userId = decoded.id || decoded.userId;
 
             if (!userId) {
                 ws.close(4002, "Invalid token payload structure");
+                return;
+            }
+
+            // Verify that the token session exists in the database to prevent logged-out use
+            const session = await prisma.session.findUnique({
+                where: { token }
+            });
+
+            if (!session) {
+                ws.close(4003, "Session expired or logged out");
                 return;
             }
 
@@ -36,7 +44,7 @@ function initWebSocket(server) {
             });
         } catch (err) {
             console.error("WebSocket Authentication Failed:", err.message);
-            ws.close(4003, "Invalid or expired token");
+            ws.close(4004, "Invalid or expired token");
         }
     });
 
@@ -52,4 +60,13 @@ function sendToUser(userId, data) {
     return false;
 }
 
-module.exports = { initWebSocket, sendToUser };
+// Broadcast to ALL connected clients
+function broadcast(data) {
+    for (const [userId, clientWs] of activeClients.entries()) {
+        if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify(data));
+        }
+    }
+}
+
+module.exports = { initWebSocket, sendToUser, broadcast };

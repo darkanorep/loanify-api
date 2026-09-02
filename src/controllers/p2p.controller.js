@@ -1,5 +1,6 @@
 const prisma = require('../lib/prisma');
-const { sendToUser } = require('../lib/websocket');
+const { sendToUser, broadcast } = require('../lib/websocket');
+
 
 // 1. Lender creates a lending advertisement / offer
 const createOffer = async (req, res) => {
@@ -30,6 +31,9 @@ const createOffer = async (req, res) => {
                 status: "ACTIVE"
             }
         });
+
+        // Broadcast real-time marketplace update to all connected users
+        broadcast({ type: "marketplace_update" });
 
         res.status(201).json({ message: "Lending offer published successfully.", offer });
     } catch (err) {
@@ -215,10 +219,47 @@ const approveApplication = async (req, res) => {
             message: `Your application to borrow $${principal} has been approved by the lender.`,
             application_id: application.id
         });
-    
+
         sendToUser(application.borrower_id, notifRecord);
 
         res.json({ message: "Application approved successfully. Loan created." });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+const updateOffer = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const offerId = Number(req.params.id);
+        const { amount_available, interest_rate, term_months } = req.body;
+
+        const offer = await prisma.p2pOffer.findUnique({
+            where: { id: offerId }
+        });
+
+        if (!offer) {
+            return res.status(404).json({ error: "Offer not found." });
+        }
+
+        // Check ownership (adjust 'user_id' or 'lender_id' based on your Prisma schema)
+        if (offer.user_id !== userId && offer.lender_id !== userId) {
+            return res.status(403).json({ error: "Unauthorized to edit this offer." });
+        }
+
+        const updatedOffer = await prisma.p2pOffer.update({
+            where: { id: offerId },
+            data: {
+                amount_available: amount_available ? parseFloat(amount_available) : undefined,
+                interest_rate: interest_rate ? parseFloat(interest_rate) : undefined,
+                term_months: term_months ? parseInt(term_months) : undefined,
+            }
+        });
+
+        // Broadcast real-time marketplace update to all connected users
+        broadcast({ type: "marketplace_update" });
+
+        res.json(updatedOffer);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -229,5 +270,6 @@ module.exports = {
     getMarketplaceOffers,
     applyToOffer,
     getLenderApplications, // Add this
+    updateOffer,        // Add this
     approveApplication     // Add this
 };

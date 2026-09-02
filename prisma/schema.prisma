@@ -46,11 +46,13 @@ model User {
   lender_offers         P2pOffer[]       @relation("LenderOffers")
   borrower_applications P2pApplication[] @relation("BorrowerApplications")
 
-  created_at    DateTime       @default(now())
-  updated_at    DateTime       @updatedAt
-  deleted_at    DateTime?
-  notifications Notification[]
-  sessions      Session[]
+  created_at        DateTime       @default(now())
+  updated_at        DateTime       @updatedAt
+  deleted_at        DateTime?
+  notifications     Notification[]
+  sessions          Session[]
+  sent_messages     Message[]      @relation("SentMessages")
+  received_messages Message[]      @relation("ReceivedMessages")
 }
 
 enum LoanStatus {
@@ -214,4 +216,17 @@ model Session {
   user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
   token      String   @unique @db.Text
   created_at DateTime @default(now())
+}
+
+model Message {
+  id          Int      @id @default(autoincrement())
+  sender_id   Int
+  receiver_id Int
+  loan_id     Int?
+  content     String   @db.Text
+  is_read     Boolean  @default(false)
+  created_at  DateTime @default(now())
+
+  sender   User @relation("SentMessages", fields: [sender_id], references: [id], onDelete: Cascade)
+  receiver User @relation("ReceivedMessages", fields: [receiver_id], references: [id], onDelete: Cascade)
 }
