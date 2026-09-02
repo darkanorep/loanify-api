@@ -84,6 +84,15 @@ const applyToOffer = async (req, res) => {
             }
         });
 
+        const notifRecord = await prisma.notification.create({
+            data: {
+                user_id: offer.lender_id,
+                title: "New Loan Application",
+                message: `Someone just applied to borrow $${amount} from your offer!`,
+                type: "new_application"
+            }
+        });
+
         // ==========================================
         // FIRE REAL-TIME NOTIFICATION TO LENDER VIA NATIVE WEBSOCKET
         // ==========================================
@@ -93,6 +102,9 @@ const applyToOffer = async (req, res) => {
             message: `Someone just applied to borrow $${amount} from your offer!`,
             application_id: application.id
         });
+
+        sendToUser(offer.lender_id, notifRecord);
+
 
         res.status(201).json({ message: "Application submitted to lender successfully.", application });
     } catch (err) {
@@ -185,6 +197,15 @@ const approveApplication = async (req, res) => {
             });
         });
 
+        const notifRecord = await prisma.notification.create({
+            data: {
+                user_id: application.borrower_id,
+                title: "Loan Approved! 🎉",
+                message: `Your application to borrow $${principal} has been approved by the lender.`,
+                type: "loan_approved"
+            }
+        });
+
         // ==========================================
         // NOTIFY BORROWER IN REAL-TIME
         // ==========================================
@@ -194,6 +215,8 @@ const approveApplication = async (req, res) => {
             message: `Your application to borrow $${principal} has been approved by the lender.`,
             application_id: application.id
         });
+    
+        sendToUser(application.borrower_id, notifRecord);
 
         res.json({ message: "Application approved successfully. Loan created." });
     } catch (err) {

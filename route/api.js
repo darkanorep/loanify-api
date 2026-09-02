@@ -9,6 +9,7 @@ const dashboardRoutes = require('../src/routes/dashboard.routes');
 const paymentsRoutes = require('../src/routes/payments.routes');
 const paymentMethodRoutes = require('../src/routes/paymentmethod.routes');
 const p2pRoutes = require('../src/routes/p2p.routes');
+const notificationRoutes = require('../src/routes/notification.routes');
 const authenticate = require('../src/middlewares/auth');
 
 router.use('/auth', authRoutes);
@@ -19,5 +20,6 @@ router.use('/dashboard', authenticate, dashboardRoutes);
 router.use('/payments', authenticate, paymentsRoutes);
 router.use('/payment-methods', authenticate, paymentMethodRoutes);
 router.use('/p2p', authenticate, p2pRoutes);
+router.use('/notifications', authenticate, notificationRoutes);
 
 module.exports = router;
