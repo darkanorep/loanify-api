@@ -2,7 +2,7 @@ const WebSocket = require('ws');
 const jwt = require('jsonwebtoken');
 const prisma = require('./prisma');
 
-const activeClients = new Map(); // userId -> WebSocket instance
+const activeClients = new Map(); // userId -> Set of WebSocket instances
 
 function initWebSocket(server) {
     const wss = new WebSocket.Server({ server });
@@ -26,21 +26,28 @@ function initWebSocket(server) {
                 return;
             }
 
-            // Verify that the token session exists in the database to prevent logged-out use
-            const session = await prisma.session.findUnique({
-                where: { token }
-            });
-
+            const session = await prisma.session.findUnique({ where: { token } });
             if (!session) {
                 ws.close(4003, "Session expired or logged out");
                 return;
             }
 
-            activeClients.set(userId, ws);
+            // Register socket into user's connection set (supports multiple tabs)
+            if (!activeClients.has(userId)) {
+                activeClients.set(userId, new Set());
+            }
+            activeClients.get(userId).add(ws);
+
             ws.send(JSON.stringify({ type: "connected", userId }));
 
             ws.on('close', () => {
-                activeClients.delete(userId);
+                const userSockets = activeClients.get(userId);
+                if (userSockets) {
+                    userSockets.delete(ws);
+                    if (userSockets.size === 0) {
+                        activeClients.delete(userId);
+                    }
+                }
             });
         } catch (err) {
             console.error("WebSocket Authentication Failed:", err.message);
@@ -52,19 +59,24 @@ function initWebSocket(server) {
 }
 
 function sendToUser(userId, data) {
-    const clientWs = activeClients.get(userId);
-    if (clientWs && clientWs.readyState === WebSocket.OPEN) {
-        clientWs.send(JSON.stringify(data));
+    const userSockets = activeClients.get(userId);
+    if (userSockets) {
+        for (const clientWs of userSockets) {
+            if (clientWs.readyState === WebSocket.OPEN) {
+                clientWs.send(JSON.stringify(data));
+            }
+        }
         return true;
     }
     return false;
 }
 
-// Broadcast to ALL connected clients
 function broadcast(data) {
-    for (const [userId, clientWs] of activeClients.entries()) {
-        if (clientWs.readyState === WebSocket.OPEN) {
-            clientWs.send(JSON.stringify(data));
+    for (const [userId, userSockets] of activeClients.entries()) {
+        for (const clientWs of userSockets) {
+            if (clientWs.readyState === WebSocket.OPEN) {
+                clientWs.send(JSON.stringify(data));
+            }
         }
     }
 }
