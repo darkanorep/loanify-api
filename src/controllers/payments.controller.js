@@ -74,7 +74,7 @@ const getPaymentsSummary = async (req, res) => {
                     amount: Number(nextInstallment.amount_due) - Number(nextInstallment.amount_paid),
                     due_date: nextInstallment.due_date,
                     active_loan_count: activeLoans.length,
-                    loan_id: nextInstallment.loan_id // <--- Add this property
+                    loan_id: nextInstallment.loan_id
                 }
                 : null,
             autopay_enabled: user.autopay_enabled,
@@ -89,4 +89,97 @@ const getPaymentsSummary = async (req, res) => {
     }
 };
 
-module.exports = { getPaymentsSummary };
+const handleLoan = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { loan_id, amount, payment_method_id } = req.body;
+
+        const result = await prisma.$transaction(async (tx) => {
+            const loan = await tx.loan.findUnique({
+                where: { id: Number(loan_id), user_id: userId },
+                include: { installments: { orderBy: { due_date: 'asc' } }, user: true }
+            });
+
+            if (!loan || loan.status !== 'ACTIVE') {
+                throw new Error("Active loan not found.");
+            }
+
+            let remainingPayment = Number(amount);
+
+            for (const inst of loan.installments) {
+                if (remainingPayment <= 0) break;
+                if (inst.status === 'PAID') continue;
+
+                const dueAmount = Number(inst.amount_due) - Number(inst.amount_paid);
+                const payAmount = Math.min(remainingPayment, dueAmount);
+
+                const newAmountPaid = Number(inst.amount_paid) + payAmount;
+                remainingPayment -= payAmount;
+
+                const isFullyPaid = newAmountPaid >= Number(inst.amount_due);
+
+                await tx.installment.update({
+                    where: { id: inst.id },
+                    data: {
+                        amount_paid: newAmountPaid,
+                        status: isFullyPaid ? 'PAID' : 'PARTIALLY_PAID',
+                    }
+                });
+            }
+
+            await tx.transaction.create({
+                data: {
+                    user_id: userId,
+                    loan_id: Number(loan_id),
+                    payment_method_id: payment_method_id ? Number(payment_method_id) : null,
+                    amount: Number(amount),
+                    type: 'REPAYMENT'
+                }
+            });
+
+            const newBalance = Math.max(0, Number(loan.outstanding_balance) - Number(amount));
+            await tx.loan.update({
+                where: { id: Number(loan_id) },
+                data: { outstanding_balance: newBalance }
+            });
+
+            const updatedInstallments = await tx.installment.findMany({
+                where: { loan_id: Number(loan_id) }
+            });
+
+            const allPaid = updatedInstallments.every(inst => inst.status === 'PAID');
+
+            if (allPaid) {
+                const hasLatePayments = updatedInstallments.some(inst => inst.status === 'LATE');
+
+                await tx.loan.update({
+                    where: { id: Number(loan_id) },
+                    data: { status: 'COMPLETED' }
+                });
+
+                if (!hasLatePayments) {
+                    const currentLimit = Number(loan.user.credit_limit || 500);
+                    const maxLimitCeiling = 30000;
+                    let newLimit = currentLimit < 2000 ? 2000 : currentLimit * 1.3;
+                    newLimit = Math.min(newLimit, maxLimitCeiling);
+
+                    await tx.user.update({
+                        where: { id: userId },
+                        data: {
+                            credit_limit: newLimit,
+                            credit_score: { increment: 15 }
+                        }
+                    });
+                }
+            }
+
+            return { message: "Payment processed successfully.", newBalance, allPaid };
+        });
+
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+module.exports = { getPaymentsSummary, handleLoan };

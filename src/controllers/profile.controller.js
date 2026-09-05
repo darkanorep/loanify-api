@@ -84,11 +84,12 @@ const getProfile = async (req, res) => {
         res.json({
             full_name: user.full_name || `${user.first_name} ${user.last_name}`.trim(),
             email: user.email,
+            phone_country_code: user.phone_country_code,
             phone_number: user.phone_number,
             kyc_status: user.kyc_status,
-            credit_score: score,
+            credit_score: user.credit_score || score,
             credit_rating: ratingLabel(score),
-            credit_limit: creditLimitForScore(score),
+            credit_limit: user.credit_limit || creditLimitForScore(score),
         });
     } catch (err) {
         res.status(500).json({ error: err.message });

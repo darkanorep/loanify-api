@@ -63,13 +63,22 @@ const applyToOffer = async (req, res) => {
         const borrowerId = req.user.id;
         const { offer_id, amount } = req.body;
 
-        const offer = await prisma.p2pOffer.findUnique({ where: { id: parseInt(offer_id) } });
+        const [borrower, offer] = await Promise.all([
+            prisma.user.findUnique({ where: { id: borrowerId } }),
+            prisma.p2pOffer.findUnique({ where: { id: parseInt(offer_id) } })
+        ]);
+
         if (!offer || offer.status !== "ACTIVE") {
             return res.status(404).json({ error: "Lending offer not found or closed." });
         }
 
         if (borrowerId === offer.lender_id) {
             return res.status(400).json({ error: "You cannot apply to your own lending offer." });
+        }
+
+        const creditLimit = Number(borrower?.credit_limit || 500);
+        if (parseFloat(amount) > creditLimit) {
+            return res.status(400).json({ error: `Requested amount exceeds your credit limit ($${creditLimit}).` });
         }
 
         if (parseFloat(amount) > offer.amount_available) {
