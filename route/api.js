@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
-
+const authenticate = require('../src/middlewares/auth');
+const verifyAdmin = require('../src/middlewares/admin');
 const authRoutes = require('../src/routes/auth.routes');
 const profileRoutes = require('../src/routes/profile.routes');
 const oauthRoutes = require('../src/routes/oauth.routes');
@@ -11,7 +12,7 @@ const paymentMethodRoutes = require('../src/routes/paymentmethod.routes');
 const p2pRoutes = require('../src/routes/p2p.routes');
 const notificationRoutes = require('../src/routes/notification.routes');
 const chatRoutes = require('../src/routes/chat.routes');
-const authenticate = require('../src/middlewares/auth');
+const adminRoutes = require('../src/routes/admin.routes');
 
 router.use('/auth', authRoutes);
 router.use('/auth', oauthRoutes);
@@ -23,4 +24,5 @@ router.use('/payment-methods', authenticate, paymentMethodRoutes);
 router.use('/p2p', authenticate, p2pRoutes);
 router.use('/notifications', authenticate, notificationRoutes);
 router.use('/chat', authenticate, chatRoutes);
+router.use('/admin', authenticate, verifyAdmin, adminRoutes);
 module.exports = router;

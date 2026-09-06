@@ -19,6 +19,7 @@ enum KycStatus {
 
 model User {
   id                 Int             @id @default(autoincrement())
+  is_admin           Boolean         @default(false)
   first_name         String
   middle_name        String?
   last_name          String
