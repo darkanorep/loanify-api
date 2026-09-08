@@ -71,6 +71,7 @@ function sendToUser(userId, data) {
     return false;
 }
 
+// Universal broadcast function to trigger live frontend dashboard & table updates
 function broadcast(data) {
     for (const [userId, userSockets] of activeClients.entries()) {
         for (const clientWs of userSockets) {
@@ -81,4 +82,9 @@ function broadcast(data) {
     }
 }
 
-module.exports = { initWebSocket, sendToUser, broadcast };
+// Alias for compatibility with code calling broadcastAdminUpdate
+function broadcastAdminUpdate(event = "admin_data_updated", data = { type: "REFRESH_ALL" }) {
+    broadcast(data);
+}
+
+module.exports = { initWebSocket, sendToUser, broadcast, broadcastAdminUpdate };

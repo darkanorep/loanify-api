@@ -33,10 +33,21 @@ const register = async (req, res) => {
 
         res.status(201).json({ message: 'Registered successfully. Check your email for the OTP.' });
     } catch (err) {
-        if (err.code === 'P2002') {
-            return res.status(400).json({ error: `An account with this ${err.meta.target[0]} already exists.` });
+        // Safely extract the target, defaulting to 'credential' if missing
+        const target = err.meta?.target;
+
+        // Check if it's an array (e.g., ['email']), a string, or fallback
+        let field = 'credential';
+        if (Array.isArray(target)) {
+            field = target[0];
+        } else if (typeof target === 'string') {
+            // Optionally split "User_email_key" to just extract "email"
+            field = target.split('_')[1] || target;
         }
-        res.status(500).json({ error: "Something went wrong during registration." });
+
+        return res.status(400).json({
+            error: `An account with this ${field} already exists.`
+        });
     }
 };
 

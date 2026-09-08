@@ -7,7 +7,7 @@ const googleCallback = async (req, res) => {
     try {
         const user = req.user;
         const token = jwt.sign(
-            { id: user.id, username: user.username, email: user.email },
+            { id: user.id, username: user.username, email: user.email, is_admin: user.is_admin },
             process.env.JWT_SECRET || "loanify-dev-secret",
             { expiresIn: '1d' }
         );
@@ -21,7 +21,10 @@ const googleCallback = async (req, res) => {
             }
         });
 
-        res.redirect(`${clientUrl}/oauth/callback?token=${token}`);
+        // Dynamically route based on admin privileges
+        const redirectPath = user.is_admin ? "/admin/dashboard" : "/dashboard";
+
+        res.redirect(`${clientUrl}/oauth/callback?token=${token}&redirect=${redirectPath}`);
     } catch (err) {
         res.redirect(`${clientUrl}/login?error=oauth_failed`);
     }

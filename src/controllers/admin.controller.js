@@ -2,6 +2,7 @@ const { creditQueue } = require('../queues/creditQueue');
 const prisma = require('../lib/prisma');
 const Redis = require('ioredis');
 const subscriber = new Redis();
+const { broadcast } = require('../lib/websocket'); // Import native WebSocket broadcast
 
 const getBorrowers = async (req, res) => {
     try {
@@ -9,6 +10,7 @@ const getBorrowers = async (req, res) => {
         const skip = (Number(page) - 1) * Number(limit);
 
         const where = {
+            is_admin: false,
             ...(kyc_status && kyc_status !== 'ALL' && { kyc_status }),
             ...(search && {
                 OR: [
@@ -21,24 +23,34 @@ const getBorrowers = async (req, res) => {
         const [borrowers, total] = await Promise.all([
             prisma.user.findMany({
                 where,
-                include: {
-                    loans: {
-                        select: { id: true, status: true, principal_amount: true, outstanding_balance: true }
-                    }
-                },
                 skip,
                 take: Number(limit),
-                orderBy: { created_at: 'desc' },
+                orderBy: { id: 'desc' },
+                select: {
+                    id: true,
+                    full_name: true,
+                    email: true,
+                    kyc_status: true,
+                    credit_score: true,
+                    credit_limit: true,
+                    is_verified: true,
+                }
             }),
             prisma.user.count({ where }),
         ]);
 
         res.json({
             borrowers,
-            pagination: { total, page: Number(page), pages: Math.ceil(total / Number(limit)) }
+            pagination: {
+                total,
+                page: Number(page),
+                limit: Number(limit),
+                pages: Math.ceil(total / Number(limit))
+            }
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error("Admin borrowers fetch error:", err);
+        res.status(500).json({ error: err.message || "Failed to fetch borrowers" });
     }
 };
 
@@ -48,6 +60,9 @@ const triggerBatchCreditUpdate = async (req, res) => {
             removeOnComplete: true,
             removeOnFail: false,
         });
+
+        // Broadcast real-time update to all connected admin WebSockets
+        broadcast({ type: "admin_data_updated", action: "BATCH_CREDIT_QUEUED", jobId: job.id });
 
         res.status(202).json({
             message: "Batch credit limit recalculation job queued successfully.",
@@ -76,7 +91,91 @@ const streamAdminEvents = (req, res) => {
     req.on('close', () => {
         subscriber.unsubscribe('admin-activity-channel');
     });
-
 };
 
-module.exports = { triggerBatchCreditUpdate, getBorrowers, streamAdminEvents };
+const getDashboardStats = async (req, res) => {
+    try {
+        const now = new Date();
+        const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
+
+        // 1. Total Active Loans Amount & Count
+        const userAggregation = await prisma.user.aggregate({
+            _sum: { credit_limit: true },
+            where: { is_admin: false }
+        });
+
+        const activeNotesCount = await prisma.user.count({
+            where: { is_admin: false }
+        });
+
+        // 2. Month-over-Month (MoM) calculation
+        const currentMonthUsers = await prisma.user.aggregate({
+            _sum: { credit_limit: true },
+            where: { is_admin: false, created_at: { gte: startOfCurrentMonth } }
+        });
+
+        const lastMonthUsers = await prisma.user.aggregate({
+            _sum: { credit_limit: true },
+            where: { is_admin: false, created_at: { gte: startOfLastMonth, lte: endOfLastMonth } }
+        });
+
+        const currentVal = Number(currentMonthUsers._sum.credit_limit || 0);
+        const lastVal = Number(lastMonthUsers._sum.credit_limit || 0);
+
+        let momPercentage = 0;
+        if (lastVal > 0) {
+            momPercentage = ((currentVal - lastVal) / lastVal) * 100;
+        } else if (currentVal > 0) {
+            momPercentage = 100;
+        }
+        const formattedMoM = `${momPercentage >= 0 ? "+" : ""}${momPercentage.toFixed(1)}% MoM`;
+
+        // 3. Platform Liquidity & Vault Pool Calculations
+        const totalPool = 50000000; // Define your total platform liquidity pool ceiling (e.g., ₱50M)
+        const allocatedAggregation = await prisma.loan.aggregate({
+            _sum: { principal_amount: true },
+            where: { status: { in: ['ACTIVE', 'APPROVED'] } }
+        });
+        const allocatedAmount = Number(allocatedAggregation._sum.principal_amount || 0);
+        const reserveAmount = Math.max(0, totalPool - allocatedAmount);
+        const utilizationRate = totalPool > 0 ? Number(((allocatedAmount / totalPool) * 100).toFixed(1)) : 0;
+
+        // 4. Pending KYC Count
+        const pendingKyc = await prisma.user.count({
+            where: { kyc_status: 'PENDING' }
+        });
+
+        // 5. Portfolio Default Rate & NPL Calculations (PAR > 30 days)
+        const defaultedLoansCount = await prisma.loan.count({
+            where: { status: 'DEFAULTED' }
+        });
+        const totalLoansCount = await prisma.loan.count();
+        const defaultRate = totalLoansCount > 0 ? Number(((defaultedLoansCount / totalLoansCount) * 100).toFixed(2)) : 0.00;
+
+        const defaultedSumAggregation = await prisma.loan.aggregate({
+            _sum: { outstanding_balance: true },
+            where: { status: 'DEFAULTED' }
+        });
+        const nplAmount = Number(defaultedSumAggregation._sum.outstanding_balance || 0);
+
+        res.json({
+            totalActiveLoans: userAggregation._sum.credit_limit || 0,
+            activeNotesCount,
+            activeLoansMoM: formattedMoM,
+            totalPool,
+            allocatedAmount,
+            reserveAmount,
+            utilizationRate,
+            pendingKyc,
+            defaultRate,
+            nplAmount,
+        });
+    } catch (err) {
+        console.error("Dashboard stats error:", err);
+        res.status(500).json({ error: "Failed to fetch dashboard statistics" });
+    }
+};
+
+module.exports = { triggerBatchCreditUpdate, getBorrowers, streamAdminEvents, getDashboardStats };
