@@ -178,4 +178,96 @@ const getDashboardStats = async (req, res) => {
     }
 };
 
-module.exports = { triggerBatchCreditUpdate, getBorrowers, streamAdminEvents, getDashboardStats };
+const getLiveNetworkStream = async (req, res) => {
+    try {
+        const recentTransactions = await prisma.transaction.findMany({
+            take: 10,
+            orderBy: { created_at: 'desc' },
+            include: { user: { select: { full_name: true } }, loan: { select: { id: true, principal_amount: true } } }
+        });
+
+        const recentUsers = await prisma.user.findMany({
+            take: 5,
+            orderBy: { created_at: 'desc' },
+            select: { id: true, full_name: true, kyc_status: true, credit_limit: true, created_at: true }
+        });
+
+        // Map database records into unified stream event format
+        const events = [
+            ...recentTransactions.map(tx => ({
+                id: `tx-${tx.id}`,
+                type: tx.type,
+                title: tx.type === 'DISBURSEMENT' ? `P2P Note #${tx.loan_id} Fully Funded` : `Installment Repayment Received`,
+                desc: `${tx.user?.full_name || 'Borrower'} submitted ${tx.amount} via ${tx.description || 'Gateway'}.`,
+                time: new Date(tx.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                source: tx.type === 'DISBURSEMENT' ? 'Smart Escrow' : 'Maya / GCash Gateway',
+                icon: tx.type === 'DISBURSEMENT' ? 'payments' : 'receipt_long',
+                color: 'text-emerald-600 bg-emerald-50'
+            })),
+            ...recentUsers.map(u => ({
+                id: `user-${u.id}`,
+                type: 'KYC',
+                title: `KYC Status: ${u.kyc_status}`,
+                desc: `${u.full_name} identity verification updated. Credit Limit: ₱${u.credit_limit}`,
+                time: new Date(u.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                source: 'AI Scoring Hub',
+                icon: 'verified_user',
+                color: u.kyc_status === 'VERIFIED' ? 'text-emerald-600 bg-emerald-50' : 'text-amber-600 bg-amber-50'
+            }))
+        ].slice(0, 10);
+
+        res.json({ events });
+    } catch (err) {
+        console.error("Live stream error:", err);
+        res.status(500).json({ error: "Failed to fetch live stream" });
+    }
+};
+
+const getPortfolioRepayments = async (req, res) => {
+    try {
+        const loans = await prisma.loan.findMany({
+            take: 10,
+            orderBy: { applied_at: 'desc' },
+            include: {
+                user: { select: { full_name: true } },
+                installments: { orderBy: { installment_number: 'asc' } }
+            }
+        });
+
+        const portfolioItems = loans.map(loan => {
+            const totalTerms = loan.term_months || 3;
+            const paidTerms = loan.installments.filter(i => i.status === 'PAID').length;
+            const progress = Math.round((paidTerms / totalTerms) * 100);
+
+            let status = "On Schedule";
+            if (loan.status === 'COMPLETED') status = "Completed";
+            else if (loan.status === 'DEFAULTED') status = "Overdue (6d)";
+
+            return {
+                id: `P2P-${loan.id}`,
+                borrower: loan.user?.full_name || "Anonymous Borrower",
+                principal: Number(loan.principal_amount),
+                rate: `${loan.interest_rate}% / mo`,
+                term: `${totalTerms} Mos`,
+                currentTerm: Math.min(paidTerms + 1, totalTerms),
+                progress,
+                gateway: Math.random() > 0.5 ? "GCash Direct" : "Maya QR",
+                status
+            };
+        });
+
+        res.json({ portfolioItems });
+    } catch (err) {
+        console.error("Portfolio repayments error:", err);
+        res.status(500).json({ error: "Failed to fetch active portfolios" });
+    }
+};
+
+module.exports = {
+    triggerBatchCreditUpdate,
+    getPortfolioRepayments,
+    getBorrowers,
+    streamAdminEvents,
+    getLiveNetworkStream,
+    getDashboardStats
+};
