@@ -9,12 +9,16 @@ const {
     getLiveNetworkStream,
     getPortfolioRepayments
 } = require('../controllers/admin.controller');
+const { handleLoanDisbursement, handleEscrowRefund } = require('../controllers/escrow.controller');
+
+router.post('/escrow/disburse', handleLoanDisbursement);
+router.post('/escrow/refund', handleEscrowRefund);
 
 router.post('/credit-limits/refresh', triggerBatchCreditUpdate);
 router.get('/borrowers', getBorrowers);
 router.get('/events', streamAdminEvents);
 router.get('/stats', getDashboardStats)
-router.post('/admin/broadcast-seed', (req, res) => {
+router.post('/broadcast-seed', (req, res) => {
     broadcast({ type: "admin_data_updated", action: "DATABASE_SEEDED" });
     res.json({ success: true });
 });

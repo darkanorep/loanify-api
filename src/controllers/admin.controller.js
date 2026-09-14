@@ -96,11 +96,16 @@ const streamAdminEvents = (req, res) => {
 const getDashboardStats = async (req, res) => {
     try {
         const now = new Date();
-        const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-        const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-        const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
 
-        // 1. Total Active Loans Amount & Count
+        // 1. Current Month Bounds (First day 00:00:00 to Last day 23:59:59)
+        const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+        const endOfCurrentMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        // 2. Previous Month Bounds (First day 00:00:00 to Last day 23:59:59)
+        const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0, 0);
+        const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+
+        // Total Active Loans Amount & Count
         const userAggregation = await prisma.user.aggregate({
             _sum: { credit_limit: true },
             where: { is_admin: false }
@@ -110,15 +115,21 @@ const getDashboardStats = async (req, res) => {
             where: { is_admin: false }
         });
 
-        // 2. Month-over-Month (MoM) calculation
+        // Month-over-Month (MoM) calculation for full month windows
         const currentMonthUsers = await prisma.user.aggregate({
             _sum: { credit_limit: true },
-            where: { is_admin: false, created_at: { gte: startOfCurrentMonth } }
+            where: {
+                is_admin: false,
+                created_at: { gte: startOfCurrentMonth, lte: endOfCurrentMonth }
+            }
         });
 
         const lastMonthUsers = await prisma.user.aggregate({
             _sum: { credit_limit: true },
-            where: { is_admin: false, created_at: { gte: startOfLastMonth, lte: endOfLastMonth } }
+            where: {
+                is_admin: false,
+                created_at: { gte: startOfLastMonth, lte: endOfLastMonth }
+            }
         });
 
         const currentVal = Number(currentMonthUsers._sum.credit_limit || 0);
@@ -132,8 +143,8 @@ const getDashboardStats = async (req, res) => {
         }
         const formattedMoM = `${momPercentage >= 0 ? "+" : ""}${momPercentage.toFixed(1)}% MoM`;
 
-        // 3. Platform Liquidity & Vault Pool Calculations
-        const totalPool = 50000000; // Define your total platform liquidity pool ceiling (e.g., ₱50M)
+        // Platform Liquidity & Vault Pool Calculations
+        const totalPool = 50000000;
         const allocatedAggregation = await prisma.loan.aggregate({
             _sum: { principal_amount: true },
             where: { status: { in: ['ACTIVE', 'APPROVED'] } }
@@ -142,12 +153,12 @@ const getDashboardStats = async (req, res) => {
         const reserveAmount = Math.max(0, totalPool - allocatedAmount);
         const utilizationRate = totalPool > 0 ? Number(((allocatedAmount / totalPool) * 100).toFixed(1)) : 0;
 
-        // 4. Pending KYC Count
+        // Pending KYC Count
         const pendingKyc = await prisma.user.count({
             where: { kyc_status: 'PENDING' }
         });
 
-        // 5. Portfolio Default Rate & NPL Calculations (PAR > 30 days)
+        // Portfolio Default Rate & NPL Calculations (PAR > 30 days)
         const defaultedLoansCount = await prisma.loan.count({
             where: { status: 'DEFAULTED' }
         });

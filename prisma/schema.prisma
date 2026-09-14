@@ -47,13 +47,15 @@ model User {
   lender_offers         P2pOffer[]       @relation("LenderOffers")
   borrower_applications P2pApplication[] @relation("BorrowerApplications")
 
-  created_at        DateTime       @default(now())
-  updated_at        DateTime       @updatedAt
-  deleted_at        DateTime?
-  notifications     Notification[]
-  sessions          Session[]
-  sent_messages     Message[]      @relation("SentMessages")
-  received_messages Message[]      @relation("ReceivedMessages")
+  created_at         DateTime            @default(now())
+  updated_at         DateTime            @updatedAt
+  deleted_at         DateTime?
+  notifications      Notification[]
+  sessions           Session[]
+  sent_messages      Message[]           @relation("SentMessages")
+  received_messages  Message[]           @relation("ReceivedMessages")
+  wallet             Wallet?
+  walletTransactions WalletTransaction[]
 }
 
 enum LoanStatus {
@@ -73,8 +75,12 @@ enum InstallmentStatus {
 }
 
 enum TransactionType {
+  TOP_UP
+  WITHDRAWAL
   DISBURSEMENT
   REPAYMENT
+  ESCROW_HOLD
+  ESCROW_RELEASE
 }
 
 model Loan {
@@ -103,8 +109,9 @@ model Loan {
   installments Installment[]
   transactions Transaction[]
 
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
+  created_at         DateTime            @default(now())
+  updated_at         DateTime            @updatedAt
+  walletTransactions WalletTransaction[]
 
   @@index([user_id])
   @@index([status])
@@ -230,4 +237,39 @@ model Message {
 
   sender   User @relation("SentMessages", fields: [sender_id], references: [id], onDelete: Cascade)
   receiver User @relation("ReceivedMessages", fields: [receiver_id], references: [id], onDelete: Cascade)
+}
+
+model Wallet {
+  id                String   @id @default(uuid())
+  user_id           String   @unique
+  user              User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  available_balance Decimal  @default(0.00) @db.Decimal(12, 2)
+  escrow_balance    Decimal  @default(0.00) @db.Decimal(12, 2)
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+}
+
+enum PaymentGateway {
+  GCASH
+  MAYA
+  INSTAPAY
+  INTERNAL_VAULT
+}
+
+model WalletTransaction {
+  id           String          @id @default(uuid())
+  wallet_id    String
+  user_id      String
+  loan_id      String?
+  type         TransactionType
+  amount       Decimal         @db.Decimal(12, 2)
+  fee          Decimal         @default(0.00) @db.Decimal(12, 2)
+  gateway      PaymentGateway  @default(INTERNAL_VAULT)
+  reference_no String          @unique
+  description  String?
+  status       String          @default("COMPLETED") // PENDING, COMPLETED, FAILED
+  created_at   DateTime        @default(now())
+
+  user User  @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  loan Loan? @relation(fields: [loan_id], references: [id], onDelete: SetNull)
 }
