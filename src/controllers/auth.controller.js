@@ -7,6 +7,18 @@ const { sendOtp } = require('../lib/mailer');
 
 const generateOtp = () => Math.floor(100000 + Math.random() * 900000).toString();
 
+const getMe = async (req, res) => {
+    try {
+        // req.user must be populated by your auth middleware (verifyToken)
+        if (!req.user) {
+            return res.status(401).json({ error: "Session expired or invalid token." });
+        }
+        return res.json({ user: req.user });
+    } catch (err) {
+        return res.status(401).json({ error: "Unauthorized" });
+    }
+};
+
 const register = async (req, res) => {
     try {
         const { first_name, middle_name, last_name, email, phone_number, username, password } = req.body;
@@ -264,5 +276,6 @@ module.exports = {
     forgotPassword,
     resetPassword,
     requestProfileOtp,
-    updateProfileWithOtp
+    updateProfileWithOtp,
+    getMe
 };

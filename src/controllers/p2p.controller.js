@@ -1,5 +1,6 @@
 const prisma = require('../lib/prisma');
 const { sendToUser, broadcast } = require('../lib/websocket');
+const crypto = require("crypto");
 
 
 // 1. Lender creates a lending advertisement / offer
@@ -8,7 +9,15 @@ const createOffer = async (req, res) => {
         const lenderId = req.user.id;
         const { amount_available, interest_rate, term_months } = req.body;
 
-        // Check if the user already has an active offer
+        const offerAmount = parseFloat(amount_available);
+        const parsedRate = parseFloat(interest_rate);
+        const parsedTerm = parseInt(term_months);
+
+        if (isNaN(offerAmount) || offerAmount <= 0) {
+            return res.status(400).json({ error: "Invalid offer amount." });
+        }
+
+        // 1. Check if the user already has an active offer
         const existingOffer = await prisma.p2pOffer.findFirst({
             where: {
                 lender_id: lenderId,
@@ -17,27 +26,85 @@ const createOffer = async (req, res) => {
         });
 
         if (existingOffer) {
-            return res.status(400).json({ 
-                error: "You already have an active lending offer. You can only have one active offer at a time." 
+            return res.status(400).json({
+                error: "You already have an active lending offer. You can only have one active offer at a time."
             });
         }
 
-        const offer = await prisma.p2pOffer.create({
-            data: {
-                lender_id: lenderId,
-                amount_available: parseFloat(amount_available),
-                interest_rate: parseFloat(interest_rate),
-                term_months: parseInt(term_months), // Fixed: changed termMonths to term_months
-                status: "ACTIVE"
+        // 2. Execute balance deduction, escrow allocation, and offer creation atomically
+        const result = await prisma.$transaction(async (tx) => {
+            // Check available wallet balance
+            const wallet = await tx.wallet.findUnique({
+                where: { user_id: lenderId }
+            });
+
+            if (!wallet || Number(wallet.available_balance) < offerAmount) {
+                throw new Error("Insufficient available balance to fund this lending offer.");
+            }
+
+            // Lock funds: move from available_balance to escrow_balance
+            const updatedWallet = await tx.wallet.update({
+                where: { user_id: lenderId },
+                data: {
+                    available_balance: { decrement: offerAmount },
+                    escrow_balance: { increment: offerAmount }
+                }
+            });
+
+            // Create P2P Offer
+            const offer = await tx.p2pOffer.create({
+                data: {
+                    lender_id: lenderId,
+                    amount_available: offerAmount,
+                    interest_rate: parsedRate,
+                    term_months: parsedTerm,
+                    status: "ACTIVE"
+                }
+            });
+
+            // Record wallet transaction audit log
+            const referenceNo = `OFFER-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+            const transaction = await tx.walletTransaction.create({
+                data: {
+                    wallet_id: wallet.id,
+                    user_id: lenderId,
+                    type: 'ESCROW_HOLD',
+                    amount: offerAmount,
+                    fee: 0.00,
+                    gateway: 'INTERNAL_VAULT',
+                    reference_no: referenceNo,
+                    description: `P2P Note Allocation (${parsedRate}% for ${parsedTerm}m)`,
+                    status: 'COMPLETED'
+                }
+            });
+
+            return { wallet: updatedWallet, offer, transaction };
+        });
+
+        // Broadcast WebSocket updates
+        broadcast({ type: "marketplace_update" });
+        broadcast({
+            type: "admin_data_updated",
+            action: "WALLET_TOPUP",
+            newEvent: {
+                id: result.transaction.id,
+                title: `P2P Offer Created`,
+                desc: `₱${offerAmount.toLocaleString()} locked into escrow.`,
+                time: "Just now",
+                source: result.transaction.reference_no,
+                color: "text-amber-600 bg-amber-50"
             }
         });
 
-        // Broadcast real-time marketplace update to all connected users
-        broadcast({ type: "marketplace_update" });
+        return res.status(201).json({
+            message: "Lending offer published and funds placed in escrow successfully.",
+            offer: result.offer,
+            wallet: result.wallet
+        });
 
-        res.status(201).json({ message: "Lending offer published successfully.", offer });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error("Create offer error:", err);
+        return res.status(400).json({ error: err.message || "Failed to publish lending offer." });
     }
 };
 
@@ -168,21 +235,53 @@ const approveApplication = async (req, res) => {
             return res.status(400).json({ error: "Insufficient funds available in your offer to approve this." });
         }
 
-        // Run as a transaction so everything succeeds or fails together
-        await prisma.$transaction(async (tx) => {
-            // 1. Mark application as APPROVED
+        const loanAmount = Number(application.amount);
+        const borrowerId = application.borrower_id;
+
+        // Run as an atomic transaction so wallet balances, loans, and schedules succeed together
+        const result = await prisma.$transaction(async (tx) => {
+            // 1. Verify and update Lender's Wallet (Deduct from Escrow Hold)
+            const lenderWallet = await tx.wallet.findUnique({
+                where: { user_id: lenderId }
+            });
+
+            if (!lenderWallet || Number(lenderWallet.escrow_balance) < loanAmount) {
+                throw new Error("Insufficient escrow balance to disburse this loan.");
+            }
+
+            const updatedLenderWallet = await tx.wallet.update({
+                where: { user_id: lenderId },
+                data: {
+                    escrow_balance: { decrement: loanAmount }
+                }
+            });
+
+            // 2. Credit Borrower's Wallet (Add to Available Balance)
+            const updatedBorrowerWallet = await tx.wallet.upsert({
+                where: { user_id: borrowerId },
+                update: {
+                    available_balance: { increment: loanAmount }
+                },
+                create: {
+                    user_id: borrowerId,
+                    available_balance: loanAmount,
+                    escrow_balance: 0.00
+                }
+            });
+
+            // 3. Mark application as APPROVED
             await tx.p2pApplication.update({
                 where: { id: application.id },
                 data: { status: "APPROVED" }
             });
 
-            // 2. Deduct amount from the lender's offer
+            // 4. Deduct amount from the lender's offer
             const updatedOffer = await tx.p2pOffer.update({
                 where: { id: application.offer.id },
-                data: { amount_available: { decrement: application.amount } }
+                data: { amount_available: { decrement: loanAmount } }
             });
 
-            // 3. Auto-close offer if balance hits 0
+            // Auto-close offer if balance hits 0
             if (updatedOffer.amount_available <= 0) {
                 await tx.p2pOffer.update({
                     where: { id: application.offer.id },
@@ -190,18 +289,19 @@ const approveApplication = async (req, res) => {
                 });
             }
 
-            // 4. Calculate financial breakdown
-            const principal = application.amount;
+            // 5. Calculate financial breakdown
+            const principal = loanAmount;
             const rate = application.offer.interest_rate / 100;
             const termMonths = application.offer.term_months;
             const totalInterest = principal * rate * (termMonths / 12);
             const totalRepayable = principal + totalInterest;
             const monthlyInstallment = totalRepayable / termMonths;
 
-            // 5. Create the actual Loan record
+            // 6. Create the actual Loan record
             const newLoan = await tx.loan.create({
                 data: {
-                    user_id: application.borrower_id,
+                    user_id: borrowerId,
+                    lender_id: lenderId,
                     purpose: "P2P Marketplace Loan",
                     principal_amount: principal,
                     interest_rate: application.offer.interest_rate,
@@ -213,7 +313,7 @@ const approveApplication = async (req, res) => {
                 }
             });
 
-            // 6. Generate upcoming installment schedule rows so "Next Due" has dates to track
+            // 7. Generate upcoming installment schedule rows
             const installmentsData = [];
             for (let i = 1; i <= termMonths; i++) {
                 const dueDate = new Date();
@@ -230,22 +330,82 @@ const approveApplication = async (req, res) => {
             await tx.installment.createMany({
                 data: installmentsData
             });
+
+            // 8. Create Ledger Audit Transactions
+            const lenderRef = `DISBURSED-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+            const borrowerRef = `FUNDED-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+
+            // Lender Ledger Entry (Escrow Outflow)
+            const lenderTx = await tx.walletTransaction.create({
+                data: {
+                    wallet_id: lenderWallet.id,
+                    user_id: lenderId,
+                    type: 'DISBURSEMENT',
+                    amount: loanAmount,
+                    fee: 0.00,
+                    gateway: 'INTERNAL_VAULT',
+                    reference_no: lenderRef,
+                    description: `P2P Loan Disbursed to Borrower #${borrowerId}`,
+                    status: 'COMPLETED'
+                }
+            });
+
+            // Borrower Ledger Entry (Available Balance Inflow)
+            const borrowerTx = await tx.walletTransaction.create({
+                data: {
+                    wallet_id: updatedBorrowerWallet.id,
+                    user_id: borrowerId,
+                    type: 'TOP_UP',
+                    amount: loanAmount,
+                    fee: 0.00,
+                    gateway: 'INTERNAL_VAULT',
+                    reference_no: borrowerRef,
+                    description: `P2P Loan Disbursed from Lender #${lenderId}`,
+                    status: 'COMPLETED'
+                }
+            });
+
+            return {
+                loan: newLoan,
+                lenderWallet: updatedLenderWallet,
+                borrowerWallet: updatedBorrowerWallet,
+                borrowerTx
+            };
         });
 
         // Send real-time notification to the borrower via WebSocket
-        sendToUser(application.borrower_id, {
-            type: "loan_approved",
-            title: "Loan Approved!",
-            message: `Your loan application for ₱${application.amount} has been approved and added to your portfolio.`
-        });
+        if (typeof sendToUser === 'function') {
+            sendToUser(borrowerId, {
+                type: "loan_approved",
+                title: "Loan Approved!",
+                message: `Your loan application for ₱${loanAmount.toLocaleString()} has been approved and ₱${loanAmount.toLocaleString()} is now available in your wallet!`
+            });
+        }
 
         if (typeof broadcast === 'function') {
             broadcast({ type: "marketplace_update" });
+            broadcast({
+                type: "admin_data_updated",
+                action: "WALLET_TOPUP",
+                newEvent: {
+                    id: result.borrowerTx.id,
+                    title: "Loan Disbursed",
+                    desc: `₱${loanAmount.toLocaleString()} deposited to borrower available balance.`,
+                    time: "Just now",
+                    source: result.borrowerTx.reference_no,
+                    color: "text-emerald-600 bg-emerald-50"
+                }
+            });
         }
 
-        res.json({ message: "Application approved successfully. Loan and schedule created." });
+        res.json({
+            message: "Application approved successfully. Loan disbursed directly to borrower's wallet.",
+            loan: result.loan,
+            lenderWallet: result.lenderWallet
+        });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error("Approve application error:", err);
+        res.status(500).json({ error: err.message || "Failed to approve application." });
     }
 };
 
@@ -303,14 +463,80 @@ const deleteOffer = async (req, res) => {
             return res.status(403).json({ error: "Unauthorized to delete this offer." });
         }
 
-        await prisma.p2pOffer.delete({
-            where: { id: offerId }
+        const refundAmount = Number(offer.amount_available);
+        const isOfferActive = offer.status === "ACTIVE";
+
+        // Execute escrow refund and deletion atomically
+        const result = await prisma.$transaction(async (tx) => {
+            let updatedWallet = null;
+            let transaction = null;
+
+            // Only refund escrow if the offer was in ACTIVE state
+            if (isOfferActive && refundAmount > 0) {
+                const wallet = await tx.wallet.findUnique({
+                    where: { user_id: userId }
+                });
+
+                if (wallet) {
+                    // Reverse escrow hold: decrement escrow_balance, increment available_balance
+                    updatedWallet = await tx.wallet.update({
+                        where: { user_id: userId },
+                        data: {
+                            available_balance: { increment: refundAmount },
+                            escrow_balance: { decrement: refundAmount }
+                        }
+                    });
+
+                    // Log audit transaction for escrow release
+                    const referenceNo = `RELEASE-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+                    transaction = await tx.walletTransaction.create({
+                        data: {
+                            wallet_id: wallet.id,
+                            user_id: userId,
+                            type: 'ESCROW_RELEASE',
+                            amount: refundAmount,
+                            fee: 0.00,
+                            gateway: 'INTERNAL_VAULT',
+                            reference_no: referenceNo,
+                            description: `P2P Offer Deleted - Escrow Refund`,
+                            status: 'COMPLETED'
+                        }
+                    });
+                }
+            }
+
+            // Hard delete the P2P offer
+            await tx.p2pOffer.delete({
+                where: { id: offerId }
+            });
+
+            return { wallet: updatedWallet, transaction };
         });
 
+        // Broadcast WebSocket updates
         broadcast({ type: "marketplace_update" });
 
-        res.json({ message: "Offer deleted successfully." });
+        if (result.transaction) {
+            broadcast({
+                type: "admin_data_updated",
+                action: "WALLET_TOPUP",
+                newEvent: {
+                    id: result.transaction.id,
+                    title: `Escrow Released`,
+                    desc: `₱${refundAmount.toLocaleString()} returned to available balance.`,
+                    time: "Just now",
+                    source: result.transaction.reference_no,
+                    color: "text-emerald-600 bg-emerald-50"
+                }
+            });
+        }
+
+        res.json({
+            message: "Offer deleted successfully and funds restored to available balance.",
+            wallet: result.wallet
+        });
     } catch (err) {
+        console.error("Delete offer error:", err);
         res.status(500).json({ error: err.message });
     }
 };

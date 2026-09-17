@@ -36,17 +36,20 @@ model User {
   reset_otp_expires  DateTime?
   credit_score       Int             @default(0)
   credit_limit       Float           @default(500)
-  loans              Loan[]
-  transactions       Transaction[]
   full_name          String?
   kyc_status         KycStatus       @default(NOT_STARTED)
   autopay_enabled    Boolean         @default(false)
   payment_methods    PaymentMethod[]
 
+  // P2P Loan Relations
+  borrowedLoans Loan[] @relation("BorrowerLoans")
+  lenderLoans   Loan[] @relation("LenderLoans")
+
   // P2P Ad & Application Relations
   lender_offers         P2pOffer[]       @relation("LenderOffers")
   borrower_applications P2pApplication[] @relation("BorrowerApplications")
 
+  transactions       Transaction[]
   created_at         DateTime            @default(now())
   updated_at         DateTime            @updatedAt
   deleted_at         DateTime?
@@ -86,7 +89,10 @@ enum TransactionType {
 model Loan {
   id      Int  @id @default(autoincrement())
   user_id Int
-  user    User @relation(fields: [user_id], references: [id])
+  user    User @relation("BorrowerLoans", fields: [user_id], references: [id])
+
+  lender_id Int?
+  lender    User? @relation("LenderLoans", fields: [lender_id], references: [id])
 
   purpose String?
 
@@ -106,14 +112,15 @@ model Loan {
   disbursed_at DateTime?
   completed_at DateTime?
 
-  installments Installment[]
-  transactions Transaction[]
-
-  created_at         DateTime            @default(now())
-  updated_at         DateTime            @updatedAt
+  installments       Installment[]
+  transactions       Transaction[]
   walletTransactions WalletTransaction[]
 
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
   @@index([user_id])
+  @@index([lender_id])
   @@index([status])
 }
 
@@ -241,17 +248,20 @@ model Message {
 
 model Wallet {
   id                String   @id @default(uuid())
-  user_id           String   @unique
+  user_id           Int      @unique // Changed from String to Int to match User.id
   user              User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
   available_balance Decimal  @default(0.00) @db.Decimal(12, 2)
   escrow_balance    Decimal  @default(0.00) @db.Decimal(12, 2)
   created_at        DateTime @default(now())
   updated_at        DateTime @updatedAt
+
+  transactions WalletTransaction[]
 }
 
 enum PaymentGateway {
   GCASH
   MAYA
+  CARD
   INSTAPAY
   INTERNAL_VAULT
 }
@@ -259,17 +269,21 @@ enum PaymentGateway {
 model WalletTransaction {
   id           String          @id @default(uuid())
   wallet_id    String
-  user_id      String
-  loan_id      String?
+  user_id      Int // Changed from String to Int to match User.id
+  loan_id      Int? // Changed from String? to Int? to match Loan.id
   type         TransactionType
   amount       Decimal         @db.Decimal(12, 2)
   fee          Decimal         @default(0.00) @db.Decimal(12, 2)
   gateway      PaymentGateway  @default(INTERNAL_VAULT)
   reference_no String          @unique
   description  String?
-  status       String          @default("COMPLETED") // PENDING, COMPLETED, FAILED
+  status       String          @default("COMPLETED")
   created_at   DateTime        @default(now())
 
-  user User  @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  loan Loan? @relation(fields: [loan_id], references: [id], onDelete: SetNull)
+  wallet Wallet @relation(fields: [wallet_id], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  loan   Loan?  @relation(fields: [loan_id], references: [id], onDelete: SetNull)
+
+  @@index([user_id])
+  @@index([wallet_id])
 }

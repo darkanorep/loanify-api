@@ -1,12 +1,15 @@
 const express = require('express');
-const { getWalletOverview, processTopUp } = require('../controllers/wallet.controller');
-
 const router = express.Router();
+const {
+    initiatePaymongoTopup,
+    handleWalletTopUp,
+    getWalletOverview,
+    verifyPaymongoTopup
+} = require('../controllers/wallet.controller');
 
-// User Wallet Routes
 router.get('/overview', getWalletOverview);
-router.post('/topup', processTopUp);
-
-// // P2P Escrow Routes
+router.post('/topup', handleWalletTopUp);
+router.post('/paymongo-topup', initiatePaymongoTopup);
+router.post('/paymongo-verify', verifyPaymongoTopup);
 
 module.exports = router;

@@ -14,27 +14,46 @@ const PORT = process.env.PORT || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
 const useSecureCookies = isProduction && process.env.COOKIE_SECURE !== 'false';
 
+// Trust proxy if running behind reverse proxies or ngrok/tunnels during webhook testing
+app.set('trust proxy', 1);
+
 // Initialize native WebSocket server on the HTTP server
 initWebSocket(server);
 
-// CORS must be registered before your routes — and before session/passport,
-// so preflight OPTIONS requests get the right headers even before auth runs.
+// CORS configuration supporting credentials from frontend
+const allowedOrigins = [
+    process.env.CLIENT_URL || 'http://localhost:5173',
+    'http://localhost:5173'
+];
+
 app.use(cors({
-    origin: process.env.CLIENT_URL, // exact origin, not "*" — required when credentials: true
+    origin: (origin, callback) => {
+        // Allow requests with no origin (like mobile apps, curl, or server-to-server webhooks)
+        if (!origin || allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+        return callback(new Error('Not allowed by CORS'));
+    },
     credentials: true,
 }));
 
 app.use(express.json());
+
+// Session configuration optimized for cross-site redirects (PayMongo -> Localhost)
 app.use(session({
-    secret: process.env.SESSION_SECRET,
+    name: 'loanify_sid',
+    secret: process.env.SESSION_SECRET || 'loanify_fallback_secret',
     resave: false,
     saveUninitialized: false,
     cookie: {
-        httpOnly: true, // default true already, explicit here for clarity
+        httpOnly: true,
         secure: useSecureCookies,
-        sameSite: 'lax', // localhost:3000 and localhost:5173 count as "same site" (same domain, different port) — lax works here
+        // 'lax' allows session cookie persistence on top-level GET redirects from external sites (PayMongo)
+        sameSite: 'lax',
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
     },
 }));
+
 app.use(passport.initialize());
 app.use(passport.session());
 
