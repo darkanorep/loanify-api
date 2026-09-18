@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { createOffer,
     getMarketplaceOffers,
+    getMyOffers,
     applyToOffer,
     getBorrowerApplications,
     getLenderApplications,
@@ -13,6 +14,7 @@ const { createOffer,
 } = require('../controllers/p2p.controller');
 
 router.get('/marketplace', getMarketplaceOffers);
+router.get('/my-offers', getMyOffers);
 router.post('/offer', createOffer);
 router.post('/apply', applyToOffer);
 router.get('/applications', getLenderApplications);

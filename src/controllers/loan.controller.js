@@ -130,23 +130,21 @@ const approveLoan = async (req, res) => {
 const getMyLoans = async (req, res) => {
     try {
         const userId = req.user.id;
+
         const loans = await prisma.loan.findMany({
             where: { user_id: userId },
-            orderBy: { created_at: 'desc' },
             include: {
-                // Earliest still-unpaid installment — used for "Next Due".
-                // Empty array for a fully paid/completed loan, which the
-                // frontend treats as "no more payments due."
                 installments: {
-                    where: { status: { in: ['PENDING', 'PARTIALLY_PAID'] } },
-                    orderBy: { due_date: 'asc' },
-                    take: 1,
-                },
+                    orderBy: { installment_number: 'asc' } // Include all schedule rows
+                }
             },
+            orderBy: { created_at: 'desc' }
         });
-        res.json({ loans });
+
+        return res.json({ loans });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error("Fetch loans error:", err);
+        return res.status(500).json({ error: "Failed to fetch loan portfolio." });
     }
 };
 
