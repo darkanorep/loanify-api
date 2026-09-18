@@ -5,6 +5,7 @@ const session = require('express-session');
 const passport = require('./src/lib/passport');
 const http = require('http');
 const { initWebSocket } = require('./src/lib/websocket');
+const { initCronJobs } = require("./src/services/cron.service");
 
 const apiRoutes = require('./route/api');
 
@@ -65,4 +66,5 @@ app.get('/', (req, res) => {
 
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    initCronJobs();
 });

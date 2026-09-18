@@ -25,6 +25,7 @@
     "ioredis": "^6.0.0",
     "joi": "^18.2.3",
     "jsonwebtoken": "^9.0.3",
+    "node-cron": "^4.6.0",
     "nodemailer": "^9.0.1",
     "nodemon": "^3.1.14",
     "passport": "^0.7.0",
