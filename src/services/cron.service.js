@@ -26,7 +26,12 @@ const runDailyLoanJobs = async () => {
             include: {
                 loan: {
                     include: {
-                        user: true
+                        user: {
+                            include: {
+                                payment_methods: { where: { is_default: true } }
+                            }
+                        },
+                        lender: selectNameObj()
                     }
                 }
             }
@@ -39,15 +44,54 @@ const runDailyLoanJobs = async () => {
 
             try {
                 await prisma.$transaction(async (tx) => {
-                    const wallet = await tx.wallet.findUnique({
+                    let wallet = await tx.wallet.findUnique({
                         where: { user_id: borrowerId }
                     });
 
-                    if (!wallet || Number(wallet.available_balance) < dueAmount) {
-                        return; // Skip if wallet has insufficient balance for AutoPay
+                    if (!wallet) {
+                        wallet = await tx.wallet.create({
+                            data: { user_id: borrowerId, available_balance: 0.00, escrow_balance: 0.00 }
+                        });
                     }
 
-                    // A. Deduct balance
+                    const availableBal = Number(wallet.available_balance);
+
+                    // AUTO DIRECT FUNDING: Check if wallet balance is below amount due
+                    if (availableBal < dueAmount) {
+                        const requiredDifference = dueAmount - availableBal;
+                        const primaryCard = inst.loan.user.payment_methods[0];
+
+                        // If no default payment method attached, skip AutoPay
+                        if (!primaryCard) {
+                            console.warn(`[AutoPay] Skipped Installment #${inst.id}: Insufficient wallet balance and no default payment method.`);
+                            return;
+                        }
+
+                        // Auto top-up the exact difference into available_balance
+                        await tx.wallet.update({
+                            where: { id: wallet.id },
+                            data: { available_balance: { increment: requiredDifference } }
+                        });
+
+                        // Log Auto Direct Funding Audit Entry
+                        const autoRef = `AUTOCARD-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+                        await tx.walletTransaction.create({
+                            data: {
+                                wallet_id: wallet.id,
+                                user_id: borrowerId,
+                                loan_id: loanId,
+                                type: "TOP_UP",
+                                amount: requiredDifference,
+                                fee: 0.00,
+                                gateway: primaryCard.type === 'CARD' ? 'CARD' : 'INTERNAL_VAULT',
+                                reference_no: autoRef,
+                                description: `AutoPay Direct Funding via ${primaryCard.institution_name} (*${primaryCard.last_four})`,
+                                status: "COMPLETED"
+                            }
+                        });
+                    }
+
+                    // A. Deduct balance from Borrower Wallet
                     const updatedWallet = await tx.wallet.update({
                         where: { user_id: borrowerId },
                         data: { available_balance: { decrement: dueAmount } }
@@ -91,12 +135,13 @@ const runDailyLoanJobs = async () => {
                         }
                     });
 
-                    // E. Create Audit Log
+                    // E. Create Audit Log for Repayment
                     const refNo = `AUTOPAY-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
                     await tx.walletTransaction.create({
                         data: {
                             wallet_id: wallet.id,
                             user_id: borrowerId,
+                            loan_id: loanId,
                             type: "REPAYMENT",
                             amount: dueAmount,
                             fee: 0.00,
@@ -111,7 +156,7 @@ const runDailyLoanJobs = async () => {
                 sendToUser(borrowerId, {
                     type: "autopay_success",
                     title: "AutoPay Executed",
-                    message: `₱${dueAmount.toLocaleString()} was automatically deducted for Loan #${loanId}.`
+                    message: `₱${dueAmount.toLocaleString()} was automatically processed for Loan #${loanId}.`
                 });
 
             } catch (err) {
@@ -177,6 +222,17 @@ const runDailyLoanJobs = async () => {
         console.error("Cron Execution Error:", err);
     }
 };
+
+function selectNameObj() {
+    return {
+        select: {
+            id: true,
+            first_name: true,
+            last_name: true,
+            full_name: true
+        }
+    };
+}
 
 /**
  * Initialize Cron Scheduler (Runs every midnight at 00:00)

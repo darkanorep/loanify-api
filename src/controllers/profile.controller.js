@@ -82,11 +82,15 @@ const getProfile = async (req, res) => {
         const score = await computeCreditScore(user.id);
 
         res.json({
-            full_name: user.full_name || `${user.first_name} ${user.last_name}`.trim(),
+            id: user.id,
+            full_name: user.full_name || `${user.first_name || ''} ${user.last_name || ''}`.trim(),
+            first_name: user.first_name,
+            last_name: user.last_name,
             email: user.email,
             phone_country_code: user.phone_country_code,
             phone_number: user.phone_number,
             kyc_status: user.kyc_status,
+            kyc_rejection_note: user.kyc_rejection_note,
             credit_score: user.credit_score || score,
             credit_rating: ratingLabel(score),
             credit_limit: user.credit_limit || creditLimitForScore(score),

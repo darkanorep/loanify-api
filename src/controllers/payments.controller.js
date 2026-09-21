@@ -115,12 +115,64 @@ const handleLoan = async (req, res) => {
                 throw new Error("Active loan not found.");
             }
 
-            const borrowerWallet = await tx.wallet.findUnique({
+            let borrowerWallet = await tx.wallet.findUnique({
                 where: { user_id: userId }
             });
 
-            if (!borrowerWallet || Number(borrowerWallet.available_balance) < paymentAmount) {
-                throw new Error(`Insufficient wallet balance. You need ₱${paymentAmount.toLocaleString()} to complete this payment.`);
+            if (!borrowerWallet) {
+                borrowerWallet = await tx.wallet.create({
+                    data: { user_id: userId, available_balance: 0.00, escrow_balance: 0.00 }
+                });
+            }
+
+            const availableBal = Number(borrowerWallet.available_balance);
+
+            // AUTO DIRECT FUNDING: Check if wallet has sufficient funds
+            if (availableBal < paymentAmount) {
+                const requiredDifference = paymentAmount - availableBal;
+
+                // Query user's default/primary payment method or specific payment_method_id
+                let targetPaymentMethod = null;
+                if (payment_method_id) {
+                    targetPaymentMethod = await tx.paymentMethod.findFirst({
+                        where: { id: Number(payment_method_id), user_id: userId }
+                    });
+                } else {
+                    targetPaymentMethod = await tx.paymentMethod.findFirst({
+                        where: { user_id: userId, is_default: true }
+                    });
+                }
+
+                if (!targetPaymentMethod) {
+                    throw new Error(
+                        `Insufficient wallet balance (₱${availableBal.toLocaleString()}). Please top up your wallet or add a primary payment method.`
+                    );
+                }
+
+                // Auto top-up the exact difference into the available_balance
+                await tx.wallet.update({
+                    where: { id: borrowerWallet.id },
+                    data: {
+                        available_balance: { increment: requiredDifference }
+                    }
+                });
+
+                // Audit trail for the automatic card top-up
+                const autoRef = `AUTOCARD-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+                await tx.walletTransaction.create({
+                    data: {
+                        wallet_id: borrowerWallet.id,
+                        user_id: userId,
+                        loan_id: Number(loan_id),
+                        type: 'TOP_UP',
+                        amount: requiredDifference,
+                        fee: 0.00,
+                        gateway: targetPaymentMethod.type === 'CARD' ? 'CARD' : 'INTERNAL_VAULT',
+                        reference_no: autoRef,
+                        description: `Auto Direct Funding via ${targetPaymentMethod.institution_name} (*${targetPaymentMethod.last_four})`,
+                        status: 'COMPLETED'
+                    }
+                });
             }
 
             // Construct readable names for descriptions
@@ -130,7 +182,7 @@ const handleLoan = async (req, res) => {
             const borrowerName = borrowerObj?.full_name || `${borrowerObj?.first_name || ''} ${borrowerObj?.last_name || ''}`.trim() || `Borrower #${userId}`;
             const lenderName = lenderObj?.full_name || `${lenderObj?.first_name || ''} ${lenderObj?.last_name || ''}`.trim() || `Lender #${loan.lender_id}`;
 
-            // 2. Deduct from Borrower's Wallet
+            // 2. Deduct full payment amount from Borrower's Wallet
             const updatedBorrowerWallet = await tx.wallet.update({
                 where: { user_id: userId },
                 data: {
@@ -180,7 +232,7 @@ const handleLoan = async (req, res) => {
                 });
             }
 
-            // 5. Recalculate Loan & User Credit Balances
+            // 5. Recalculate Loan Balances & Mark Complete (Without Touching User Credit Standing or Limits)
             const newTotalPaid = Number(loan.total_paid) + paymentAmount;
             const newBalance = Math.max(0, Number(loan.outstanding_balance) - paymentAmount);
 
@@ -199,8 +251,6 @@ const handleLoan = async (req, res) => {
             const allPaid = updatedInstallments.every(inst => inst.status === 'PAID');
 
             if (allPaid) {
-                const hasLatePayments = updatedInstallments.some(inst => inst.status === 'LATE');
-
                 await tx.loan.update({
                     where: { id: Number(loan_id) },
                     data: {
@@ -208,21 +258,6 @@ const handleLoan = async (req, res) => {
                         completed_at: new Date()
                     }
                 });
-
-                if (!hasLatePayments) {
-                    const currentLimit = Number(loan.user.credit_limit || 500);
-                    const maxLimitCeiling = 30000;
-                    let newLimit = currentLimit < 2000 ? 2000 : currentLimit * 1.3;
-                    newLimit = Math.min(newLimit, maxLimitCeiling);
-
-                    await tx.user.update({
-                        where: { id: userId },
-                        data: {
-                            credit_limit: newLimit,
-                            credit_score: { increment: 15 }
-                        }
-                    });
-                }
             }
 
             // 6. Audit Logging (Transaction + WalletTransaction with Names)

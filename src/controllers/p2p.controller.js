@@ -6,7 +6,7 @@ const crypto = require("crypto");
 const createOffer = async (req, res) => {
     try {
         const lenderId = req.user.id;
-        const { amount_available, interest_rate, term_months } = req.body;
+        const { amount_available, interest_rate, term_months, confirm_direct_funding } = req.body;
 
         const offerAmount = parseFloat(amount_available);
         const parsedRate = parseFloat(interest_rate);
@@ -30,15 +30,67 @@ const createOffer = async (req, res) => {
             });
         }
 
-        // Execute balance deduction, escrow allocation, and offer creation atomically
+        // Execute auto top-up (if needed), balance deduction, escrow allocation, and offer creation atomically
         const result = await prisma.$transaction(async (tx) => {
-            // Check available wallet balance
-            const wallet = await tx.wallet.findUnique({
+            let wallet = await tx.wallet.findUnique({
                 where: { user_id: lenderId }
             });
 
-            if (!wallet || Number(wallet.available_balance) < offerAmount) {
-                throw new Error("Insufficient available balance to fund this lending offer.");
+            if (!wallet) {
+                wallet = await tx.wallet.create({
+                    data: { user_id: lenderId, available_balance: 0.00, escrow_balance: 0.00 }
+                });
+            }
+
+            const availableBal = Number(wallet.available_balance);
+
+            // AUTO DIRECT FUNDING: Check if wallet available balance is less than offer amount
+            if (availableBal < offerAmount) {
+                const requiredDifference = offerAmount - availableBal;
+
+                // Query lender's primary/default payment method
+                const primaryPaymentMethod = await tx.paymentMethod.findFirst({
+                    where: { user_id: lenderId, is_default: true }
+                });
+
+                if (!primaryPaymentMethod) {
+                    throw new Error(
+                        `Insufficient wallet balance (₱${availableBal.toLocaleString()}). Please add a primary payment method or top up first.`
+                    );
+                }
+
+                // If user has not confirmed direct funding yet, return confirmation payload to prompt frontend modal
+                if (!confirm_direct_funding) {
+                    return {
+                        requires_confirmation: true,
+                        required_difference: requiredDifference,
+                        payment_method: `${primaryPaymentMethod.institution_name} (*${primaryPaymentMethod.last_four})`
+                    };
+                }
+
+                // Auto top-up the exact difference into available_balance
+                await tx.wallet.update({
+                    where: { id: wallet.id },
+                    data: {
+                        available_balance: { increment: requiredDifference }
+                    }
+                });
+
+                // Audit log entry for Auto Direct Funding top-up
+                const autoRef = `AUTOCARD-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+                await tx.walletTransaction.create({
+                    data: {
+                        wallet_id: wallet.id,
+                        user_id: lenderId,
+                        type: 'TOP_UP',
+                        amount: requiredDifference,
+                        fee: 0.00,
+                        gateway: primaryPaymentMethod.type === 'CARD' ? 'CARD' : 'INTERNAL_VAULT',
+                        reference_no: autoRef,
+                        description: `Auto Direct Funding for Offer via ${primaryPaymentMethod.institution_name} (*${primaryPaymentMethod.last_four})`,
+                        status: 'COMPLETED'
+                    }
+                });
             }
 
             // Lock funds: move from available_balance to escrow_balance
@@ -61,7 +113,7 @@ const createOffer = async (req, res) => {
                 }
             });
 
-            // Record wallet transaction audit log
+            // Record wallet transaction audit log for escrow hold
             const referenceNo = `OFFER-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
             const transaction = await tx.walletTransaction.create({
                 data: {
@@ -79,6 +131,11 @@ const createOffer = async (req, res) => {
 
             return { wallet: updatedWallet, offer, transaction };
         });
+
+        // Prompt frontend confirmation modal if required difference exists and hasn't been confirmed
+        if (result.requires_confirmation) {
+            return res.json(result);
+        }
 
         // Broadcast WebSocket updates
         broadcast({ type: "marketplace_update" });
@@ -246,15 +303,20 @@ const approveApplication = async (req, res) => {
         const lenderId = req.user.id;
         const { application_id } = req.body;
 
+        if (!application_id) {
+            return res.status(400).json({ error: "application_id is required." });
+        }
+
+        // 1. Fetch Application with P2pOffer and Borrower details
         const application = await prisma.p2pApplication.findUnique({
             where: { id: parseInt(application_id) },
             include: {
                 offer: {
                     include: {
-                        lender: { select: { first_name: true, last_name: true, full_name: true } }
+                        lender: { select: { id: true, first_name: true, last_name: true, full_name: true } }
                     }
                 },
-                borrower: { select: { first_name: true, last_name: true, full_name: true } }
+                borrower: { select: { id: true, first_name: true, last_name: true, full_name: true } }
             }
         });
 
@@ -268,26 +330,125 @@ const approveApplication = async (req, res) => {
 
         const loanAmount = Number(application.amount);
         const borrowerId = application.borrower_id;
+        const termMonths = application.offer.term_months || 1;
+        const interestRate = application.offer.interest_rate || 5.0;
 
-        // Construct names for readable transaction descriptions
+        // Name construction for transaction descriptions
         const lenderObj = application.offer.lender;
         const borrowerObj = application.borrower;
-
         const lenderName = lenderObj?.full_name || `${lenderObj?.first_name || ''} ${lenderObj?.last_name || ''}`.trim() || `Lender #${lenderId}`;
         const borrowerName = borrowerObj?.full_name || `${borrowerObj?.first_name || ''} ${borrowerObj?.last_name || ''}`.trim() || `Borrower #${borrowerId}`;
 
-        const result = await prisma.$transaction(async (tx) => {
-            // ... (keep previous wallet deduction/credit and loan generation steps 1-7) ...
+        // Repayment Calculations
+        const totalInterest = loanAmount * (interestRate / 100);
+        const totalRepayable = loanAmount + totalInterest;
+        const monthlyInstallment = totalRepayable / termMonths;
 
-            // 8. Create Ledger Audit Transactions
+        // Execute atomic multi-table transaction
+        const result = await prisma.$transaction(async (tx) => {
+            // 1. Verify Lender's Escrow Balance
+            const lenderWallet = await tx.wallet.findUnique({
+                where: { user_id: lenderId }
+            });
+
+            if (!lenderWallet || Number(lenderWallet.escrow_balance) < loanAmount) {
+                throw new Error("Insufficient escrow funds allocated for this offer.");
+            }
+
+            // 2. Fetch or Create Borrower's Wallet
+            let borrowerWallet = await tx.wallet.findUnique({
+                where: { user_id: borrowerId }
+            });
+
+            if (!borrowerWallet) {
+                borrowerWallet = await tx.wallet.create({
+                    data: {
+                        user_id: borrowerId,
+                        available_balance: 0.00,
+                        escrow_balance: 0.00
+                    }
+                });
+            }
+
+            // 3. Deduct ONLY the actual disbursed amount from Lender's ESCROW Balance
+            const updatedLenderWallet = await tx.wallet.update({
+                where: { id: lenderWallet.id },
+                data: { escrow_balance: { decrement: loanAmount } }
+            });
+
+            // 4. Credit exact disbursed amount to Borrower's AVAILABLE Balance
+            const updatedBorrowerWallet = await tx.wallet.update({
+                where: { id: borrowerWallet.id },
+                data: { available_balance: { increment: loanAmount } }
+            });
+
+            // 5. Update Application Status to APPROVED
+            const updatedApplication = await tx.p2pApplication.update({
+                where: { id: application.id },
+                data: { status: "APPROVED" }
+            });
+
+            // 6. Partial Offer Deduction: Update remaining offer liquidity
+            const remainingOfferAmount = Number(application.offer.amount_available) - loanAmount;
+            const offerStatus = remainingOfferAmount <= 0 ? "CLOSED" : "ACTIVE";
+
+            await tx.p2pOffer.update({
+                where: { id: application.offer_id },
+                data: {
+                    amount_available: Math.max(0, remainingOfferAmount),
+                    status: offerStatus
+                }
+            });
+
+            // 7. Create Active Loan Record
+            const newLoan = await tx.loan.create({
+                data: {
+                    user_id: borrowerId,
+                    lender_id: lenderId,
+                    purpose: "P2P Marketplace Loan",
+                    principal_amount: loanAmount,
+                    interest_rate: interestRate,
+                    term_months: termMonths,
+                    monthly_installment: monthlyInstallment,
+                    total_repayable: totalRepayable,
+                    outstanding_balance: totalRepayable,
+                    status: "ACTIVE",
+                    approved_at: new Date(),
+                    disbursed_at: new Date()
+                }
+            });
+
+            // Generate Installment Schedule Rows for the Loan
+            const installmentRows = [];
+            for (let i = 1; i <= termMonths; i++) {
+                const dueDate = new Date();
+                dueDate.setMonth(dueDate.getMonth() + i);
+
+                installmentRows.push({
+                    loan_id: newLoan.id,
+                    installment_number: i,
+                    due_date: dueDate,
+                    amount_due: monthlyInstallment,
+                    amount_paid: 0.00,
+                    status: "PENDING"
+                });
+            }
+
+            // Bulk insert installments
+            await tx.installment.createMany({
+                data: installmentRows
+            });
+
+            // 8. Create Ledger Audit Entries
             const lenderRef = `DISBURSED-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
             const borrowerRef = `FUNDED-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
 
-            // Lender Ledger Entry
+            // Lender Ledger Transaction Entry
             const lenderTx = await tx.walletTransaction.create({
                 data: {
                     wallet_id: lenderWallet.id,
                     user_id: lenderId,
+                    loan_id: newLoan.id,
                     type: 'DISBURSEMENT',
                     amount: loanAmount,
                     fee: 0.00,
@@ -298,11 +459,12 @@ const approveApplication = async (req, res) => {
                 }
             });
 
-            // Borrower Ledger Entry (Display Lender's Name)
+            // Borrower Ledger Transaction Entry
             const borrowerTx = await tx.walletTransaction.create({
                 data: {
                     wallet_id: updatedBorrowerWallet.id,
                     user_id: borrowerId,
+                    loan_id: newLoan.id,
                     type: 'TOP_UP',
                     amount: loanAmount,
                     fee: 0.00,
@@ -313,14 +475,48 @@ const approveApplication = async (req, res) => {
                 }
             });
 
-            return { loan: newLoan, lenderWallet: updatedLenderWallet, borrowerWallet: updatedBorrowerWallet, borrowerTx };
+            return {
+                loan: newLoan,
+                application: updatedApplication,
+                lenderWallet: updatedLenderWallet,
+                borrowerWallet: updatedBorrowerWallet,
+                borrowerTx
+            };
         });
 
-        // ... (keep WebSocket notifications and res.json) ...
+        // Real-Time WebSocket Notifications & Marketplace Event Broadcasts
+        if (typeof sendToUser === 'function') {
+            sendToUser(borrowerId, {
+                type: "loan_approved",
+                title: "Loan Approved! 🎉",
+                message: `Your loan application for ₱${loanAmount.toLocaleString()} has been approved by ${lenderName}. Funds are available in your wallet.`
+            });
+        }
+
+        if (typeof broadcast === 'function') {
+            broadcast({ type: "marketplace_update" });
+            broadcast({
+                type: "admin_data_updated",
+                action: "P2P_LOAN_APPROVED",
+                newEvent: {
+                    id: result.borrowerTx.id,
+                    title: "P2P Loan Approved",
+                    desc: `₱${loanAmount.toLocaleString()} disbursed to ${borrowerName}`,
+                    time: "Just now",
+                    source: result.borrowerTx.reference_no,
+                    color: "text-emerald-600 bg-emerald-50"
+                }
+            });
+        }
+
+        return res.json({
+            message: "Loan application approved and funds disbursed successfully.",
+            data: result
+        });
 
     } catch (err) {
         console.error("Approve application error:", err);
-        res.status(500).json({ error: err.message || "Failed to approve application." });
+        return res.status(500).json({ error: err.message || "Failed to approve application." });
     }
 };
 
@@ -364,88 +560,125 @@ const deleteOffer = async (req, res) => {
         const userId = req.user.id;
         const offerId = Number(req.params.id);
 
+        // Fetch offer and pending applications
         const offer = await prisma.p2pOffer.findUnique({
-            where: { id: offerId }
+            where: { id: offerId },
+            include: {
+                applications: {
+                    where: { status: "PENDING" }
+                }
+            }
         });
 
         if (!offer) {
             return res.status(404).json({ error: "Offer not found." });
         }
 
-        if (offer.user_id !== userId && offer.lender_id !== userId) {
+        const lenderId = offer.lender_id || offer.user_id;
+        if (lenderId !== userId) {
             return res.status(403).json({ error: "Unauthorized to delete this offer." });
         }
 
-        const refundAmount = Number(offer.amount_available);
-        const isOfferActive = offer.status === "ACTIVE";
+        // Prevent cancellation if there are PENDING applications waiting for review
+        if (offer.applications && offer.applications.length > 0) {
+            return res.status(400).json({
+                error: "Cannot cancel offer with pending applications. Please approve or reject them first."
+            });
+        }
 
-        // Execute escrow refund and deletion atomically
+        const refundAmount = Number(offer.amount_available);
+
         const result = await prisma.$transaction(async (tx) => {
             let updatedWallet = null;
             let transaction = null;
 
-            if (isOfferActive && refundAmount > 0) {
+            // Release remaining available liquidity from Escrow back to Available Balance
+            if (refundAmount > 0) {
                 const wallet = await tx.wallet.findUnique({
                     where: { user_id: userId }
                 });
 
                 if (wallet) {
-                    updatedWallet = await tx.wallet.update({
-                        where: { user_id: userId },
-                        data: {
-                            available_balance: { increment: refundAmount },
-                            escrow_balance: { decrement: refundAmount }
-                        }
-                    });
+                    const currentEscrow = Number(wallet.escrow_balance);
+                    const actualUnlockAmount = Math.min(currentEscrow, refundAmount);
 
-                    const referenceNo = `RELEASE-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-                    transaction = await tx.walletTransaction.create({
-                        data: {
-                            wallet_id: wallet.id,
-                            user_id: userId,
-                            type: 'ESCROW_RELEASE',
-                            amount: refundAmount,
-                            fee: 0.00,
-                            gateway: 'INTERNAL_VAULT',
-                            reference_no: referenceNo,
-                            description: `P2P Offer Deleted - Escrow Refund`,
-                            status: 'COMPLETED'
-                        }
-                    });
+                    if (actualUnlockAmount > 0) {
+                        updatedWallet = await tx.wallet.update({
+                            where: { user_id: userId },
+                            data: {
+                                available_balance: { increment: actualUnlockAmount },
+                                escrow_balance: { decrement: actualUnlockAmount }
+                            }
+                        });
+
+                        const referenceNo = `ESCROW-RELEASE-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+                        transaction = await tx.walletTransaction.create({
+                            data: {
+                                wallet_id: wallet.id,
+                                user_id: userId,
+                                type: 'ESCROW_RELEASE',
+                                amount: actualUnlockAmount,
+                                fee: 0.00,
+                                gateway: 'INTERNAL_VAULT',
+                                reference_no: referenceNo,
+                                description: `Escrow Released from Cancelled P2P Offer #${offerId}`,
+                                status: 'COMPLETED'
+                            }
+                        });
+                    }
                 }
             }
 
-            await tx.p2pOffer.delete({
-                where: { id: offerId }
+            // Count total historical applications (APPROVED, REJECTED, etc.)
+            const totalAppsCount = await tx.p2pApplication.count({
+                where: { offer_id: offerId }
             });
+
+            if (totalAppsCount > 0) {
+                // DO NOT DELETE: Soft close offer to preserve Loan & Installment timeline history
+                await tx.p2pOffer.update({
+                    where: { id: offerId },
+                    data: {
+                        status: "CLOSED",
+                        amount_available: 0
+                    }
+                });
+            } else {
+                // Safe to hard delete only if no historical applications ever existed
+                await tx.p2pOffer.delete({
+                    where: { id: offerId }
+                });
+            }
 
             return { wallet: updatedWallet, transaction };
         });
 
-        broadcast({ type: "marketplace_update" });
-
-        if (result.transaction) {
-            broadcast({
-                type: "admin_data_updated",
-                action: "WALLET_TOPUP",
-                newEvent: {
-                    id: result.transaction.id,
-                    title: `Escrow Released`,
-                    desc: `₱${refundAmount.toLocaleString()} returned to available balance.`,
-                    time: "Just now",
-                    source: result.transaction.reference_no,
-                    color: "text-emerald-600 bg-emerald-50"
-                }
-            });
+        if (typeof broadcast === 'function') {
+            broadcast({ type: "marketplace_update" });
+            if (result.transaction) {
+                broadcast({
+                    type: "admin_data_updated",
+                    action: "P2P_OFFER_CANCELLED",
+                    newEvent: {
+                        id: result.transaction.id,
+                        title: "Escrow Released",
+                        desc: `₱${refundAmount.toLocaleString()} returned to available balance.`,
+                        time: "Just now",
+                        source: result.transaction.reference_no,
+                        color: "text-emerald-600 bg-emerald-50"
+                    }
+                });
+            }
         }
 
-        res.json({
-            message: "Offer deleted successfully and funds restored to available balance.",
+        return res.json({
+            message: "Offer closed successfully and remaining escrow restored to available balance.",
             wallet: result.wallet
         });
+
     } catch (err) {
         console.error("Delete offer error:", err);
-        res.status(500).json({ error: err.message });
+        return res.status(500).json({ error: err.message });
     }
 };
 
@@ -507,31 +740,86 @@ const rejectApplication = async (req, res) => {
         const userId = req.user.id;
         const { application_id } = req.body;
 
-        const application = await prisma.p2pApplication.findUnique({
-            where: { id: Number(application_id) },
-            include: { offer: true }
-        });
-
-        if (!application) return res.status(404).json({ error: "Application not found." });
-        if (application.offer.user_id !== userId && application.offer.lender_id !== userId) {
-            return res.status(403).json({ error: "Unauthorized." });
+        if (!application_id) {
+            return res.status(400).json({ error: "application_id is required." });
         }
 
+        // 1. Fetch Application with Offer, Lender, and Borrower details
+        const application = await prisma.p2pApplication.findUnique({
+            where: { id: Number(application_id) },
+            include: {
+                offer: {
+                    include: {
+                        lender: { select: { id: true, first_name: true, last_name: true, full_name: true } }
+                    }
+                },
+                borrower: { select: { id: true, first_name: true, last_name: true, full_name: true } }
+            }
+        });
+
+        if (!application) {
+            return res.status(404).json({ error: "Application not found." });
+        }
+
+        if (application.status !== "PENDING") {
+            return res.status(400).json({ error: "Application has already been processed." });
+        }
+
+        const lenderId = application.offer.lender_id || application.offer.user_id;
+        if (lenderId !== userId) {
+            return res.status(403).json({ error: "Unauthorized. You do not own this offer." });
+        }
+
+        const borrowerId = application.borrower_id;
+        const loanAmount = Number(application.amount);
+        const lenderObj = application.offer.lender;
+        const lenderName = lenderObj?.full_name || `${lenderObj?.first_name || ''} ${lenderObj?.last_name || ''}`.trim() || `Lender #${userId}`;
+
+        // 2. Mark Application as REJECTED in database
         const updatedApp = await prisma.p2pApplication.update({
             where: { id: Number(application_id) },
             data: { status: 'REJECTED' }
         });
 
-        sendToUser(application.borrower_id, {
-            type: "loan_rejected",
-            title: "Loan Application Rejected",
-            message: `Your loan application for ₱${application.amount} was rejected by the lender.`
+        // Note: Offer amount_available & Lender escrow_balance remain UNTOUCHED
+        // so other prospective borrowers can still apply for the offer funds.
+
+        // 3. Send Real-Time WebSocket Alerts
+        if (typeof sendToUser === 'function') {
+            sendToUser(borrowerId, {
+                type: "loan_rejected",
+                title: "Loan Application Rejected",
+                message: `Your loan application for ₱${loanAmount.toLocaleString()} was rejected by ${lenderName}.`
+            });
+        }
+
+        if (typeof broadcast === 'function') {
+            // Signal all connected clients to update their UI
+            broadcast({ type: "marketplace_update" });
+
+            // Admin event audit log
+            broadcast({
+                type: "admin_data_updated",
+                action: "P2P_APPLICATION_REJECTED",
+                newEvent: {
+                    id: `APP-REJECT-${application.id}`,
+                    title: "P2P Application Declined",
+                    desc: `Application #${application.id} for ₱${loanAmount.toLocaleString()} declined by ${lenderName}`,
+                    time: "Just now",
+                    source: `APP-${application.id}`,
+                    color: "text-rose-600 bg-rose-50"
+                }
+            });
+        }
+
+        return res.json({
+            message: "Loan application rejected successfully.",
+            data: updatedApp
         });
 
-        broadcast({ type: "marketplace_update" });
-        res.json(updatedApp);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error("Reject application error:", err);
+        return res.status(500).json({ error: err.message || "Failed to reject application." });
     }
 };
 

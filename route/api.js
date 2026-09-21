@@ -14,10 +14,12 @@ const notificationRoutes = require('../src/routes/notification.routes');
 const chatRoutes = require('../src/routes/chat.routes');
 const adminRoutes = require('../src/routes/admin.routes');
 const walletRoutes = require('../src/routes/wallet.routes');
+const kycRoutes = require('../src/routes/kyc.routes');
 
 router.use('/auth', authRoutes);
 router.use('/auth', oauthRoutes);
 router.use('/profile', authenticate, profileRoutes);
+router.use('/kyc', authenticate, kycRoutes);
 router.use('/loans', authenticate, loanRoutes);
 router.use('/dashboard', authenticate, dashboardRoutes);
 router.use('/payments', authenticate, paymentsRoutes);

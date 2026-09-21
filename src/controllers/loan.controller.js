@@ -131,17 +131,45 @@ const getMyLoans = async (req, res) => {
     try {
         const userId = req.user.id;
 
+        // 1. Fetch Borrower Loans with Installment Schedule, Lender Info, and Recent Transactions
         const loans = await prisma.loan.findMany({
             where: { user_id: userId },
             include: {
                 installments: {
                     orderBy: { installment_number: 'asc' } // Include all schedule rows
+                },
+                lender: {
+                    select: {
+                        id: true,
+                        first_name: true,
+                        last_name: true,
+                        full_name: true,
+                        email: true
+                    }
+                },
+                transactions: {
+                    orderBy: { created_at: 'desc' },
+                    take: 5
                 }
             },
             orderBy: { created_at: 'desc' }
         });
 
-        return res.json({ loans });
+        // 2. Fetch Borrower Wallet Balance for payment calculations
+        const wallet = await prisma.wallet.findUnique({
+            where: { user_id: userId }
+        });
+
+        // 3. Fetch Primary Payment Method for Auto Direct Funding fallback
+        const primaryPaymentMethod = await prisma.paymentMethod.findFirst({
+            where: { user_id: userId, is_default: true }
+        });
+
+        return res.json({
+            loans,
+            walletBalance: Number(wallet?.available_balance || 0),
+            primaryPaymentMethod
+        });
     } catch (err) {
         console.error("Fetch loans error:", err);
         return res.status(500).json({ error: "Failed to fetch loan portfolio." });

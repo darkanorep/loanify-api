@@ -11,10 +11,32 @@ datasource db {
 }
 
 enum KycStatus {
-  NOT_STARTED
+  NOT_SUBMITTED
   PENDING
   VERIFIED
   REJECTED
+}
+
+enum KycDocType {
+  PASSPORT
+  DRIVERS_LICENSE
+  NATIONAL_ID
+  SELFIE_LIVENESS
+  PROOF_OF_ADDRESS
+}
+
+model KycDocument {
+  id            Int        @id @default(autoincrement())
+  user_id       Int
+  doc_type      KycDocType
+  id_number     String?
+  country       String?
+  file_url      String // Remote URL or storage path
+  is_face_match Boolean    @default(false)
+  ocr_raw_data  Json? // Stores full parsed extraction payload
+  created_at    DateTime   @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
 }
 
 model User {
@@ -37,7 +59,7 @@ model User {
   credit_score       Int             @default(0)
   credit_limit       Float           @default(500)
   full_name          String?
-  kyc_status         KycStatus       @default(NOT_STARTED)
+  kyc_status         KycStatus       @default(NOT_SUBMITTED)
   autopay_enabled    Boolean         @default(false)
   payment_methods    PaymentMethod[]
 
@@ -59,6 +81,7 @@ model User {
   received_messages  Message[]           @relation("ReceivedMessages")
   wallet             Wallet?
   walletTransactions WalletTransaction[]
+  kycDocuments       KycDocument[]
 }
 
 enum LoanStatus {
