@@ -64,7 +64,7 @@ app.get('/', (req, res) => {
 server.listen(PORT,
     '0.0.0.0',
     () => {
-    console.log(`🚀 Loanify API & WebSockets running on http://0.0.0.0:${PORT}`);
-    // console.log(`🚀 Loanify API & WebSockets running on http://localhost:${PORT}`);
+    // console.log(`🚀 Loanify API & WebSockets running on http://0.0.0.0:${PORT}`);
+    console.log(`🚀 Loanify API & WebSockets running on http://localhost:${PORT}`);
     initCronJobs();
 });

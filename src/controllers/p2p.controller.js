@@ -296,8 +296,6 @@ const getLenderApplications = async (req, res) => {
 };
 
 // 5. Lender approves a borrower's application
-// Inside approveApplication in src/controllers/p2p.controller.js
-
 const approveApplication = async (req, res) => {
     try {
         const lenderId = req.user.id;
@@ -989,6 +987,94 @@ const rejectApplication = async (req, res) => {
     }
 };
 
+const getLenderInvestments = async (req, res) => {
+    try {
+        const lenderId = req.user.id;
+
+        // 1. Fetch all loans funded by this lender
+        const fundedLoans = await prisma.loan.findMany({
+            where: { lender_id: lenderId },
+            include: {
+                user: {
+                    select: {
+                        id: true,
+                        first_name: true,
+                        last_name: true,
+                        full_name: true,
+                        credit_score: true
+                    }
+                },
+                installments: {
+                    orderBy: { installment_number: "asc" }
+                }
+            },
+            orderBy: { created_at: "desc" }
+        });
+
+        // 2. Fetch lender's active P2P offers (Query only valid lender_id field)
+        const activeOffers = await prisma.p2pOffer.findMany({
+            where: { lender_id: lenderId },
+            orderBy: { created_at: "desc" }
+        });
+
+        // 3. Fetch lender's wallet metrics
+        const wallet = await prisma.wallet.findUnique({
+            where: { user_id: lenderId }
+        });
+
+        // 4. Fetch wallet yield transactions for earned interest calculations
+        const yieldTransactions = await prisma.walletTransaction.findMany({
+            where: {
+                user_id: lenderId,
+                type: "TOP_UP",
+                description: {
+                    contains: "Yield",
+                    mode: "insensitive"
+                },
+                status: "COMPLETED"
+            }
+        });
+
+        // Financial Aggregations
+        const totalPrincipalLent = fundedLoans.reduce(
+            (sum, loan) => sum + Number(loan.principal_amount || 0), 0
+        );
+
+        const totalEarnedYield = yieldTransactions.reduce(
+            (sum, tx) => sum + Number(tx.amount || 0), 0
+        );
+
+        const totalOutstandingInflows = fundedLoans
+            .filter(loan => loan.status === "ACTIVE")
+            .reduce((sum, loan) => sum + Number(loan.outstanding_balance || 0), 0);
+
+        const availableBalance = Number(wallet?.available_balance || 0);
+        const escrowBalance = Number(wallet?.escrow_balance || 0);
+        const totalVaultLiquidity = availableBalance + escrowBalance + totalOutstandingInflows;
+
+        return res.json({
+            metrics: {
+                totalPrincipalLent,
+                totalEarnedYield,
+                totalOutstandingInflows,
+                availableBalance,
+                escrowBalance,
+                totalVaultLiquidity,
+                activeNotesCount: fundedLoans.filter(l => l.status === "ACTIVE").length,
+                completedNotesCount: fundedLoans.filter(l => l.status === "COMPLETED").length
+            },
+            fundedLoans,
+            activeOffers
+        });
+
+    } catch (err) {
+        console.error("Get lender investments error:", err);
+        return res.status(500).json({ error: "Failed to load lender investments portfolio." });
+    }
+};
+
+module.exports = { getLenderInvestments };
+
 module.exports = {
     createOffer,
     getMarketplaceOffers,
@@ -1000,5 +1086,6 @@ module.exports = {
     deleteOffer,
     getBorrowerApplications,
     cancelApplication,
-    rejectApplication
+    rejectApplication,
+    getLenderInvestments
 };

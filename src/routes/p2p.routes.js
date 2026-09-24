@@ -10,7 +10,8 @@ const { createOffer,
     updateOffer,
     deleteOffer,
     cancelApplication,
-    rejectApplication
+    rejectApplication,
+    getLenderInvestments
 } = require('../controllers/p2p.controller');
 
 router.get('/marketplace', getMarketplaceOffers);
@@ -24,5 +25,6 @@ router.delete('/offer/:id', deleteOffer);
 router.delete('/applications/:id', cancelApplication);
 router.get('/borrower-applications', getBorrowerApplications);
 router.post('/applications/reject', rejectApplication);
+router.get('/investments', getLenderInvestments);
 
 module.exports = router;
