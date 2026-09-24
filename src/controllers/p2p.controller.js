@@ -524,10 +524,15 @@ const updateOffer = async (req, res) => {
     try {
         const userId = req.user.id;
         const offerId = Number(req.params.id);
-        const { amount_available, interest_rate, term_months } = req.body;
+        const { amount_available, interest_rate, term_months, confirm_direct_funding } = req.body;
 
         const offer = await prisma.p2pOffer.findUnique({
-            where: { id: offerId }
+            where: { id: offerId },
+            include: {
+                applications: {
+                    where: { status: "PENDING" }
+                }
+            }
         });
 
         if (!offer) {
@@ -538,20 +543,181 @@ const updateOffer = async (req, res) => {
             return res.status(403).json({ error: "Unauthorized to edit this offer." });
         }
 
-        const updatedOffer = await prisma.p2pOffer.update({
-            where: { id: offerId },
-            data: {
-                amount_available: amount_available ? parseFloat(amount_available) : undefined,
-                interest_rate: interest_rate ? parseFloat(interest_rate) : undefined,
-                term_months: term_months ? parseInt(term_months) : undefined,
+        if (offer.status === "CLOSED") {
+            return res.status(400).json({ error: "Cannot edit a closed offer." });
+        }
+
+        if (offer.applications && offer.applications.length > 0) {
+            return res.status(400).json({
+                error: "Cannot edit offer while there are pending applications attached to it."
+            });
+        }
+
+        const newAmount = amount_available ? parseFloat(amount_available) : Number(offer.amount_available);
+        const currentOfferAmount = Number(offer.amount_available);
+        const amountDelta = newAmount - currentOfferAmount;
+
+        const result = await prisma.$transaction(async (tx) => {
+            let wallet = await tx.wallet.findUnique({
+                where: { user_id: userId }
+            });
+
+            if (!wallet) {
+                wallet = await tx.wallet.create({
+                    data: { user_id: userId, available_balance: 0.00, escrow_balance: 0.00 }
+                });
             }
+
+            let transaction = null;
+
+            if (amountDelta > 0) {
+                // INCREASING OFFER AMOUNT
+                const availableBal = Number(wallet.available_balance);
+
+                if (availableBal < amountDelta) {
+                    const requiredDifference = amountDelta - availableBal;
+
+                    const primaryPaymentMethod = await tx.paymentMethod.findFirst({
+                        where: { user_id: userId, is_default: true }
+                    });
+
+                    if (!primaryPaymentMethod) {
+                        throw new Error(
+                            `Insufficient wallet balance (₱${availableBal.toLocaleString()}). Please add a primary payment method to cover the additional ₱${requiredDifference.toLocaleString()}.`
+                        );
+                    }
+
+                    if (!confirm_direct_funding) {
+                        return {
+                            requires_confirmation: true,
+                            required_difference: requiredDifference,
+                            payment_method: `${primaryPaymentMethod.institution_name} (*${primaryPaymentMethod.last_four})`
+                        };
+                    }
+
+                    // Auto top-up exact difference into available_balance
+                    await tx.wallet.update({
+                        where: { id: wallet.id },
+                        data: {
+                            available_balance: { increment: requiredDifference }
+                        }
+                    });
+
+                    const autoRef = `AUTOCARD-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+                    await tx.walletTransaction.create({
+                        data: {
+                            wallet_id: wallet.id,
+                            user_id: userId,
+                            type: 'TOP_UP',
+                            amount: requiredDifference,
+                            fee: 0.00,
+                            gateway: primaryPaymentMethod.type === 'CARD' ? 'CARD' : 'INTERNAL_VAULT',
+                            reference_no: autoRef,
+                            description: `Auto Direct Funding for Offer Top-Up via ${primaryPaymentMethod.institution_name} (*${primaryPaymentMethod.last_four})`,
+                            status: 'COMPLETED'
+                        }
+                    });
+                }
+
+                // Deduct from available balance and move to escrow
+                await tx.wallet.update({
+                    where: { id: wallet.id },
+                    data: {
+                        available_balance: { decrement: amountDelta },
+                        escrow_balance: { increment: amountDelta }
+                    }
+                });
+
+                const refNo = `ESCROW-HOLD-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+                transaction = await tx.walletTransaction.create({
+                    data: {
+                        wallet_id: wallet.id,
+                        user_id: userId,
+                        type: 'ESCROW_HOLD',
+                        amount: amountDelta,
+                        fee: 0.00,
+                        gateway: 'INTERNAL_VAULT',
+                        reference_no: refNo,
+                        description: `P2P Offer #${offerId} Increased by ₱${amountDelta.toLocaleString()}`,
+                        status: 'COMPLETED'
+                    }
+                });
+
+            } else if (amountDelta < 0) {
+                // DECREASING OFFER AMOUNT (e.g. ₱999,999 down to ₱9,999)
+                const releaseAmount = Math.abs(amountDelta);
+                const currentEscrow = Number(wallet.escrow_balance);
+                const actualRelease = Math.min(currentEscrow, releaseAmount);
+
+                // Transfer excess escrow balance back to available balance
+                await tx.wallet.update({
+                    where: { id: wallet.id },
+                    data: {
+                        escrow_balance: { decrement: actualRelease },
+                        available_balance: { increment: actualRelease }
+                    }
+                });
+
+                // Record Wallet Transaction Audit Log for Escrow Release
+                const refNo = `ESCROW-RELEASE-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+                transaction = await tx.walletTransaction.create({
+                    data: {
+                        wallet_id: wallet.id,
+                        user_id: userId,
+                        type: 'ESCROW_RELEASE',
+                        amount: actualRelease,
+                        fee: 0.00,
+                        gateway: 'INTERNAL_VAULT',
+                        reference_no: refNo,
+                        description: `P2P Offer #${offerId} Adjusted - Released ₱${actualRelease.toLocaleString()} to Available Balance`,
+                        status: 'COMPLETED'
+                    }
+                });
+            }
+
+            const updatedOffer = await tx.p2pOffer.update({
+                where: { id: offerId },
+                data: {
+                    amount_available: amount_available ? parseFloat(amount_available) : undefined,
+                    interest_rate: interest_rate ? parseFloat(interest_rate) : undefined,
+                    term_months: term_months ? parseInt(term_months) : undefined,
+                }
+            });
+
+            const updatedWallet = await tx.wallet.findUnique({
+                where: { user_id: userId }
+            });
+
+            return { updatedOffer, wallet: updatedWallet, transaction };
         });
 
-        broadcast({ type: "marketplace_update" });
+        if (result.requires_confirmation) {
+            return res.json(result);
+        }
 
-        res.json(updatedOffer);
+        if (typeof broadcast === 'function') {
+            broadcast({ type: "marketplace_update" });
+
+            if (result.transaction) {
+                broadcast({
+                    type: "admin_data_updated",
+                    action: "P2P_OFFER_UPDATED",
+                    newEvent: {
+                        id: result.transaction.id,
+                        title: "Offer Adjusted",
+                        desc: result.transaction.description,
+                        time: "Just now",
+                        source: result.transaction.reference_no,
+                        color: "text-emerald-600 bg-emerald-50"
+                    }
+                });
+            }
+        }
+
+        return res.json(result.updatedOffer);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error("Update offer error:", err);
+        return res.status(500).json({ error: err.message });
     }
 };
 

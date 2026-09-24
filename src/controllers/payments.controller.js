@@ -93,7 +93,7 @@ const getPaymentsSummary = async (req, res) => {
 const handleLoan = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { loan_id, amount, payment_method_id } = req.body;
+        const { loan_id, amount, payment_method_id, confirm_direct_funding } = req.body;
         const paymentAmount = Number(amount);
 
         if (isNaN(paymentAmount) || paymentAmount <= 0) {
@@ -147,6 +147,15 @@ const handleLoan = async (req, res) => {
                     throw new Error(
                         `Insufficient wallet balance (₱${availableBal.toLocaleString()}). Please top up your wallet or add a primary payment method.`
                     );
+                }
+
+                // If direct funding hasn't been explicitly confirmed yet, return confirmation payload
+                if (!confirm_direct_funding) {
+                    return {
+                        requires_confirmation: true,
+                        required_difference: requiredDifference,
+                        payment_method: `${targetPaymentMethod.institution_name} (*${targetPaymentMethod.last_four})`
+                    };
                 }
 
                 // Auto top-up the exact difference into the available_balance
@@ -313,6 +322,11 @@ const handleLoan = async (req, res) => {
                 lenderName
             };
         });
+
+        // Prompt frontend confirmation modal if required difference exists and hasn't been confirmed
+        if (result.requires_confirmation) {
+            return res.json(result);
+        }
 
         // 7. Real-Time WebSocket Alerts
         if (typeof sendToUser === 'function' && result.borrowerTx) {
