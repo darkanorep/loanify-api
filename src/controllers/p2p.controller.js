@@ -9,8 +9,15 @@ const createOffer = async (req, res) => {
         const { amount_available, interest_rate, term_months, confirm_direct_funding } = req.body;
 
         const offerAmount = parseFloat(amount_available);
-        const parsedRate = parseFloat(interest_rate);
-        const parsedTerm = parseInt(term_months);
+
+        // Safe optional parsing for rate and term (allows null/empty for flexible borrower proposals)
+        const parsedRate = (interest_rate !== undefined && interest_rate !== null && interest_rate !== "")
+            ? parseFloat(interest_rate)
+            : null;
+
+        const parsedTerm = (term_months !== undefined && term_months !== null && term_months !== "")
+            ? parseInt(term_months, 10)
+            : null;
 
         if (isNaN(offerAmount) || offerAmount <= 0) {
             return res.status(400).json({ error: "Invalid offer amount." });
@@ -102,16 +109,22 @@ const createOffer = async (req, res) => {
                 }
             });
 
-            // Create P2P Offer
+            // Create P2P Offer with optional interest rate & term
             const offer = await tx.p2pOffer.create({
                 data: {
-                    lender_id: lenderId,
+                    lender: {
+                        connect: { id: lenderId }
+                    },
                     amount_available: offerAmount,
                     interest_rate: parsedRate,
                     term_months: parsedTerm,
                     status: "ACTIVE"
                 }
             });
+
+            // Format dynamic transaction description based on presence of rate/term
+            const rateText = parsedRate !== null ? `${parsedRate}%` : "Flexible Rate";
+            const termText = parsedTerm !== null ? `${parsedTerm}m` : "Flexible Term";
 
             // Record wallet transaction audit log for escrow hold
             const referenceNo = `OFFER-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
@@ -124,7 +137,7 @@ const createOffer = async (req, res) => {
                     fee: 0.00,
                     gateway: 'INTERNAL_VAULT',
                     reference_no: referenceNo,
-                    description: `P2P Note Allocation (${parsedRate}% for ${parsedTerm}m)`,
+                    description: `P2P Note Allocation (${rateText} for ${termText})`,
                     status: 'COMPLETED'
                 }
             });
@@ -215,11 +228,20 @@ const getMyOffers = async (req, res) => {
 const applyToOffer = async (req, res) => {
     try {
         const borrowerId = req.user.id;
-        const { offer_id, amount } = req.body;
+        // Destructure proposed_interest_rate along with existing fields
+        const {
+            offer_id,
+            amount,
+            term_months,
+            proposed_interest_rate,
+            interest_rate,
+            purpose,
+            description
+        } = req.body;
 
         const [borrower, offer] = await Promise.all([
             prisma.user.findUnique({ where: { id: borrowerId } }),
-            prisma.p2pOffer.findUnique({ where: { id: parseInt(offer_id) } })
+            prisma.p2pOffer.findUnique({ where: { id: parseInt(offer_id, 10) } })
         ]);
 
         if (!offer || offer.status !== "ACTIVE") {
@@ -232,19 +254,39 @@ const applyToOffer = async (req, res) => {
 
         const creditLimit = Number(borrower?.credit_limit || 500);
         if (parseFloat(amount) > creditLimit) {
-            return res.status(400).json({ error: `Requested amount exceeds your credit limit (₱${creditLimit.toLocaleString()}).` });
+            return res.status(400).json({
+                error: `Requested amount exceeds your credit limit (₱${creditLimit.toLocaleString()}).`
+            });
         }
 
         if (parseFloat(amount) > offer.amount_available) {
-            return res.status(400).json({ error: `Requested amount exceeds lender's available balance (₱${Number(offer.amount_available).toLocaleString()}).` });
+            return res.status(400).json({
+                error: `Requested amount exceeds lender's available balance (₱${Number(offer.amount_available).toLocaleString()}).`
+            });
         }
 
+        // Determine rate: use proposed rate, or fallback to fixed offer rate, or default 5%
+        const rawRate = proposed_interest_rate ?? interest_rate ?? offer.interest_rate;
+        const parsedRate = (rawRate !== undefined && rawRate !== null && rawRate !== "")
+            ? parseFloat(rawRate)
+            : 5.0;
+
+        // Determine term: use requested term, or fallback to fixed offer term, or default 6 months
+        const parsedTerm = term_months
+            ? parseInt(term_months, 10)
+            : (offer.term_months || 6);
+
+        // Create the P2P Application
         const application = await prisma.p2pApplication.create({
             data: {
                 offer_id: offer.id,
                 borrower_id: borrowerId,
                 amount: parseFloat(amount),
-                status: "PENDING"
+                term_months: parsedTerm,
+                proposed_interest_rate: parsedRate,
+                purpose: purpose || null,
+                description: description || null,
+                status: "PENDING",
             }
         });
 
@@ -252,7 +294,7 @@ const applyToOffer = async (req, res) => {
             data: {
                 user_id: offer.lender_id,
                 title: "New Loan Application",
-                message: `Someone just applied to borrow ₱${amount.toLocaleString()} from your offer!`,
+                message: `Someone just applied to borrow ₱${parseFloat(amount).toLocaleString()} from your offer!`,
                 type: "new_application"
             }
         });
@@ -260,15 +302,20 @@ const applyToOffer = async (req, res) => {
         sendToUser(offer.lender_id, {
             type: "new_application",
             title: "New Loan Application",
-            message: `Someone just applied to borrow ₱${amount.toLocaleString()} from your offer!`,
+            message: `Someone just applied to borrow ₱${parseFloat(amount).toLocaleString()} from your offer!`,
             application_id: application.id
         });
 
         sendToUser(offer.lender_id, notifRecord);
 
-        res.status(201).json({ message: "Application submitted to lender successfully.", application });
+        return res.status(201).json({
+            message: "Application submitted to lender successfully.",
+            application
+        });
+
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error("Error applying to offer:", err);
+        return res.status(500).json({ error: err.message || "Failed to submit loan application." });
     }
 };
 
@@ -551,7 +598,19 @@ const updateOffer = async (req, res) => {
             });
         }
 
-        const newAmount = amount_available ? parseFloat(amount_available) : Number(offer.amount_available);
+        const newAmount = amount_available !== undefined && amount_available !== null && amount_available !== ""
+            ? parseFloat(amount_available)
+            : Number(offer.amount_available);
+
+        // Parse optional rate & term (sets to null if cleared or empty string to make Flexible)
+        const parsedRate = (interest_rate !== undefined && interest_rate !== null && interest_rate !== "")
+            ? parseFloat(interest_rate)
+            : null;
+
+        const parsedTerm = (term_months !== undefined && term_months !== null && term_months !== "")
+            ? parseInt(term_months, 10)
+            : null;
+
         const currentOfferAmount = Number(offer.amount_available);
         const amountDelta = newAmount - currentOfferAmount;
 
@@ -642,7 +701,7 @@ const updateOffer = async (req, res) => {
                 });
 
             } else if (amountDelta < 0) {
-                // DECREASING OFFER AMOUNT (e.g. ₱999,999 down to ₱9,999)
+                // DECREASING OFFER AMOUNT
                 const releaseAmount = Math.abs(amountDelta);
                 const currentEscrow = Number(wallet.escrow_balance);
                 const actualRelease = Math.min(currentEscrow, releaseAmount);
@@ -676,9 +735,9 @@ const updateOffer = async (req, res) => {
             const updatedOffer = await tx.p2pOffer.update({
                 where: { id: offerId },
                 data: {
-                    amount_available: amount_available ? parseFloat(amount_available) : undefined,
-                    interest_rate: interest_rate ? parseFloat(interest_rate) : undefined,
-                    term_months: term_months ? parseInt(term_months) : undefined,
+                    amount_available: newAmount,
+                    interest_rate: parsedRate,
+                    term_months: parsedTerm,
                 }
             });
 
@@ -715,7 +774,7 @@ const updateOffer = async (req, res) => {
         return res.json(result.updatedOffer);
     } catch (err) {
         console.error("Update offer error:", err);
-        return res.status(500).json({ error: err.message });
+        return res.status(500).json({ error: err.message || "Failed to update lending offer." });
     }
 };
 

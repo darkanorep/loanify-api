@@ -100,9 +100,18 @@ const verifyPaymongoTopup = async (req, res) => {
         }
 
         const session = sessionData.data;
+        const attributes = session.attributes || {};
+
+        // --- FIX: Check if the payment status is actually paid ---
+        const paymentIntentStatus = attributes.payment_intent?.attributes?.status;
+        const isPaid = attributes.payments?.some(p => p.attributes?.status === 'paid') || paymentIntentStatus === 'succeeded';
+
+        if (!isPaid) {
+            return res.status(400).json({ error: "Payment was cancelled or has not been completed yet." });
+        }
 
         // Safely extract and parse amount
-        const rawAmount = session.attributes.amount || session.attributes.line_items?.[0]?.amount || 0;
+        const rawAmount = attributes.amount || attributes.line_items?.[0]?.amount || 0;
         const amountInPhp = parseFloat(rawAmount) / 100;
 
         if (isNaN(amountInPhp) || amountInPhp <= 0) {
@@ -110,7 +119,7 @@ const verifyPaymongoTopup = async (req, res) => {
         }
 
         // Map PayMongo channel name to Prisma PaymentGateway enum
-        const rawChannel = session.attributes.payment_method_types?.[0]?.toUpperCase() || '';
+        const rawChannel = attributes.payment_method_types?.[0]?.toUpperCase() || '';
         let channel = 'GCASH';
         if (rawChannel === 'PAYMAYA' || rawChannel === 'MAYA') channel = 'MAYA';
         if (rawChannel === 'CARD') channel = 'CARD';
@@ -308,9 +317,103 @@ const getWalletOverview = async (req, res) => {
     }
 };
 
+/**
+ * Handle Cash-Out / Withdrawal Request
+ * POST /api/wallet/withdraw
+ */
+const handleWalletWithdrawal = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { amount, bank_code, account_number, account_name } = req.body;
+
+        const numericAmount = parseFloat(amount);
+        const fee = 15.00; // InstaPay transfer fee
+
+        if (isNaN(numericAmount) || numericAmount < 100) {
+            return res.status(400).json({ error: "Minimum cash-out amount is ₱100." });
+        }
+
+        // 1. Fetch User Wallet
+        const wallet = await prisma.wallet.findUnique({
+            where: { user_id: userId }
+        });
+
+        if (!wallet) {
+            return res.status(404).json({ error: "Wallet not found." });
+        }
+
+        if (parseFloat(wallet.available_balance) < numericAmount) {
+            return res.status(400).json({ error: "Insufficient available balance for withdrawal." });
+        }
+
+        const referenceNo = `WD-${Date.now()}-${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+        const targetAccount = account_number ? ` (•••• ${account_number.slice(-4)})` : '';
+        const providerName = bank_code || 'Linked Payment Account';
+
+        // 2. Map incoming bank_code to valid Prisma PaymentGateway Enum
+        const validGateways = ['GCASH', 'MAYA', 'CARD', 'INSTAPAY', 'INTERNAL_VAULT'];
+        let validGatewayEnum = 'INSTAPAY'; // Standard default fallback for Philippine bank cash-outs
+
+        if (bank_code && validGateways.includes(bank_code.toUpperCase())) {
+            validGatewayEnum = bank_code.toUpperCase();
+        }
+
+        // 3. Perform Atomic Balance Deduction & Transaction Creation via Prisma Transaction
+        const result = await prisma.$transaction(async (tx) => {
+            const updatedWallet = await tx.wallet.update({
+                where: { id: wallet.id },
+                data: {
+                    available_balance: { decrement: numericAmount }
+                }
+            });
+
+            const transaction = await tx.walletTransaction.create({
+                data: {
+                    wallet_id: wallet.id,
+                    user_id: userId,
+                    type: 'WITHDRAWAL',
+                    amount: numericAmount,
+                    fee: fee,
+                    gateway: validGatewayEnum, // Passed valid enum value
+                    reference_no: referenceNo,
+                    description: `Cash Out to ${providerName}${targetAccount}`,
+                    status: 'COMPLETED'
+                }
+            });
+
+            return { updatedWallet, transaction };
+        });
+
+        // 4. Broadcast WebSocket Event for Real-Time UI Sync
+        broadcast({
+            type: "admin_data_updated",
+            action: "WALLET_WITHDRAWAL",
+            newEvent: {
+                id: result.transaction.id,
+                title: "Cash Out Request Processed",
+                desc: `₱${numericAmount.toLocaleString()} withdrawn to ${providerName}.`,
+                time: "Just now",
+                source: referenceNo,
+                color: "text-[#0F2942] bg-[#faf8f5]"
+            }
+        });
+
+        return res.json({
+            message: "Withdrawal processed successfully.",
+            wallet: result.updatedWallet,
+            transaction: result.transaction
+        });
+
+    } catch (err) {
+        console.error("Withdrawal Error:", err);
+        return res.status(500).json({ error: err.message || "Failed to process withdrawal." });
+    }
+};
+
 module.exports = {
     initiatePaymongoTopup,
     verifyPaymongoTopup,
     handleWalletTopUp,
-    getWalletOverview
+    getWalletOverview,
+    handleWalletWithdrawal
 };

@@ -219,22 +219,26 @@ model P2pOffer {
   lender_id        Int
   lender           User             @relation("LenderOffers", fields: [lender_id], references: [id])
   amount_available Float
-  interest_rate    Float
-  term_months      Int
-  status           String           @default("ACTIVE") // ACTIVE, CLOSED
+  interest_rate    Float? // <--- Add '?' to make optional
+  term_months      Int? // <--- Add '?' to make optional
+  status           String           @default("ACTIVE")
   created_at       DateTime         @default(now())
   applications     P2pApplication[]
 }
 
 model P2pApplication {
-  id          Int      @id @default(autoincrement())
-  offer_id    Int
-  offer       P2pOffer @relation(fields: [offer_id], references: [id])
-  borrower_id Int
-  borrower    User     @relation("BorrowerApplications", fields: [borrower_id], references: [id])
-  amount      Float
-  status      String   @default("PENDING") // PENDING, APPROVED, REJECTED
-  created_at  DateTime @default(now())
+  id                     Int      @id @default(autoincrement())
+  offer_id               Int
+  offer                  P2pOffer @relation(fields: [offer_id], references: [id])
+  borrower_id            Int
+  borrower               User     @relation("BorrowerApplications", fields: [borrower_id], references: [id])
+  amount                 Float
+  purpose                String?
+  description            String?
+  term_months            Int?     @default(6)
+  proposed_interest_rate Float? // Proposed APR rate for flexible lender offers
+  status                 String   @default("PENDING") // PENDING, APPROVED, REJECTED
+  created_at             DateTime @default(now())
 }
 
 model Notification {
