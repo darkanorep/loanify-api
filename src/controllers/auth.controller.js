@@ -106,9 +106,17 @@ const resendOtp = async (req, res) => {
 
 const login = async (req, res) => {
     try {
-        const { username, password } = req.body;
+        const { username: identifier, password } = req.body;
+        const loginValue = String(identifier ?? "").trim();
 
-        const user = await prisma.user.findUnique({ where: { username } });
+        const user = await prisma.user.findFirst({
+            where: {
+                OR: [
+                    { username: loginValue },
+                    { email: { equals: loginValue, mode: "insensitive" } }
+                ]
+            }
+        });
         if (!user) return res.status(404).json({ error: 'User not found' });
         if (!user.is_verified) return res.status(403).json({ error: 'Please verify your email first' });
 
